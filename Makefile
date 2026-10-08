@@ -6,7 +6,7 @@ fmt:
 	gofmt -l -w .
 
 nofloat:
-	@! grep -rnE 'float32|float64' --include='*.go' $(wildcard internal/domain internal/app)
+	@! grep -rnE 'float32|float64|ParseFloat|big\.Float' --include='*.go' $(wildcard internal/domain internal/app)
 
 vet:
 	go vet ./...
