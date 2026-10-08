@@ -218,3 +218,67 @@ Um identificador de texto não pode ser vazio, não pode ter espaço nas pontas,
 ### 16.4. Erros e serialização
 
 As funções `Parse` devolvem um único erro, `ids.ErrInvalid`. A tradução para `INVALID_IDENTIFIER` ou `MISSING_IDEMPOTENCY_KEY` é da camada de aplicação, porque `ids` não importa `failure`. Os tipos implementam `encoding.TextMarshaler`, então saem como texto em JSON e em logs.
+
+## 17. Lançamento do ledger
+
+Implementado em `internal/domain/ledger`. O enunciado trata do assunto na seção 6.4. A tabela, os índices únicos e os triggers que impedem alteração são do grupo 9 do `tasks.md` e ainda não existem.
+
+### 17.1. Conteúdo
+
+Um lançamento tem identificador, carteira, transação, direção (`DEBIT` ou `CREDIT`), valor, saldo anterior, saldo posterior, versão da carteira e instante de criação. Os campos são privados e não há método que os altere. `Fields()` devolve uma cópia dos dados, então mudar o que foi devolvido não muda o lançamento.
+
+- **Acréscimo ao enunciado:** a versão da carteira. O enunciado lista os outros oito campos; a versão existe para ordenar o ledger e ligar o lançamento ao evento de mudança de saldo.
+- **Base:** "Cada lançamento registra `id`, `walletId`, `transactionId`, direção (`DEBIT` ou `CREDIT`), valor, saldo anterior, saldo posterior e instante de criação." e "O lançamento é imutável".
+
+### 17.2. Validação
+
+A construção recusa: carteira ou transação vazias, versão menor que 1, valor que não seja maior que zero, saldo anterior ou posterior negativo, e saldo posterior diferente de `anterior + valor` no crédito ou `anterior - valor` no débito. Moedas diferentes, valor não inicializado e overflow são recusados pela própria conta, feita com `Money`.
+
+Todos os casos devolvem o mesmo erro, `ledger.ErrInvalidEntry`. Um lançamento inválido não é rejeição de negócio: indica defeito no código que o montou ou dado corrompido, e ninguém precisa distinguir qual regra falhou.
+
+- **Base:** "sua construção deve validar `balanceAfter = balanceBefore ± money`, conforme a direção" e, na seção 6, "Valores de domínio não inicializados ou inválidos devem ser rejeitados."
+
+### 17.3. Criação e reidratação
+
+`NewEntry` gera o identificador (UUIDv7) e marca o instante atual em UTC, com precisão de microssegundo, a mesma do PostgreSQL. `Rehydrate` recebe o identificador e o instante já gravados e não gera nada. As duas passam pela mesma validação.
+
+- **Base:** "Separe criação e reidratação. A reidratação não deve reaplicar movimentações, transições ou emissão de eventos."
+
+## 18. Carteira
+
+Implementado em `internal/domain/wallet`. O enunciado trata do assunto na seção 6.2. O controle de concorrência, a tabela e a unicidade por jogador e moeda são dos grupos 9 a 11 do `tasks.md` e estão nas seções 2 e 3 deste documento, ainda pendentes.
+
+### 18.1. Conteúdo e encapsulamento
+
+A carteira guarda identificador, jogador, saldo, versão e os instantes de criação e de atualização. A moeda é a do saldo. O estado é privado: `State()` devolve uma cópia, e o saldo só muda por `Credit` e `Debit`.
+
+- **Base:** "Deve carregar identidade, jogador, moeda, saldo, versão e instantes de criação e atualização." e "mantendo a alteração do saldo sob controle do agregado".
+
+### 18.2. Abertura e reidratação
+
+`Open` gera o identificador e começa na versão 1. Os instantes de criação e de atualização são marcados em UTC, com precisão de microssegundo, a mesma do PostgreSQL. Com saldo inicial positivo, devolve também o movimento de crédito, de zero até o saldo, na própria versão 1. Com saldo zero não há movimento. `Rehydrate` reproduz o estado gravado sem gerar nada e recusa identificador vazio, saldo negativo, versão menor que 1 e instante ausente.
+
+- **Base:** "A versão inicial é `1`" e, na seção 9, "a versão da carteira nessa abertura é `1`. Saldo inicial zero não cria `OPENING`, ledger nem esses eventos financeiros."
+
+### 18.3. Crédito e débito
+
+As duas operações calculam o novo saldo antes de alterar qualquer coisa. Só quando tudo passa a carteira muda: saldo novo, versão mais um e instante de atualização. Uma operação recusada deixa a carteira exatamente como estava.
+
+Cada operação aceita devolve um `Movement` com direção, valor, saldo anterior, saldo posterior e versão. São os dados com que a camada de aplicação monta o lançamento do ledger e o evento.
+
+- **Base:** "Débitos precisam preservar saldo maior ou igual a zero.", "A moeda de cada movimentação deve coincidir com a da carteira." e "depois da criação, incremente-a apenas quando houver mudança de saldo."
+
+### 18.4. Erros
+
+| Erro | Quando |
+| --- | --- |
+| `ErrInsufficientFunds` | débito maior que o saldo |
+| `ErrCurrencyMismatch` | moeda diferente da carteira |
+| `ErrBalanceOverflow` | crédito além do limite de `int64` |
+| `ErrInvalidAmount` | valor que não é maior que zero, ou saldo inicial negativo |
+| `ErrInvalidWallet` | estado inválido na reidratação, ou jogador vazio |
+
+A carteira não conhece códigos de falha nem tipos de operação. Ela devolve um único erro de saldo insuficiente; quem decide entre `INSUFFICIENT_FUNDS` e `REVERSAL_INSUFFICIENT_FUNDS` é a camada que sabe se o débito veio de uma aposta ou de uma reversão.
+
+- **Por quê:** `wallet` e `wager` não se importam, para que cada agregado proteja seu próprio estado.
+- **Base:** "Seu código de falha deve ser diferente daquele usado para uma aposta sem saldo." A divisão de responsabilidade entre os pacotes é interpretação deste projeto.
