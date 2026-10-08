@@ -84,13 +84,101 @@ O valor será gravado como `BIGINT` de unidades mínimas e a moeda como `CHAR(3)
 
 ## 2. Acesso ao banco e delimitação de transações
 
-_Pendente (grupo 9 do `tasks.md`)._
+Implementado em `internal/infra/postgres` e em `migrations/`. O enunciado trata do assunto nas seções 4 ("Acesso ao banco") e 5.
+
+### 2.1. Biblioteca
+
+`pgx` v5, com SQL escrito à mão. Não há ORM, gerador de código nem construtor de consultas: cada `SELECT`, `INSERT`, `UPDATE`, lock e constraint aparece por extenso no repositório ou na migration.
+
+- **Base:** "`pgx` com SQL explícito é preferencial" e "Transações, locks e constraints devem permanecer explícitos e verificáveis."
+
+### 2.2. Quem abre e quem usa a transação
+
+A transação SQL é aberta pelo caso de uso, por meio do `TxRunner`, e não pelos repositórios.
+
+1. O caso de uso chama `TxRunner.Run` com uma função.
+2. `Run` abre a transação, define o prazo de espera por lock (`lock_timeout`) só para ela e guarda a transação no `context.Context`.
+3. Cada repositório chamado dentro da função lê a transação do contexto e executa nela.
+4. Se a função devolve `nil`, `Run` confirma. Se devolve erro, ou se há pânico, `Run` desfaz tudo.
+
+| Regra | Como é garantida |
+| --- | --- |
+| Todas as escritas de uma operação no mesmo commit | todos os repositórios usam a transação do contexto |
+| Escrita ou lock fora de transação | o repositório devolve `postgres.ErrNoTransaction` |
+| `Run` chamado dentro de outro `Run` | participa da transação de fora por meio de um `SAVEPOINT`; se o bloco de dentro falha, só ele é desfeito e a transação de fora continua utilizável |
+| Leitura consistente (`RunReadOnly`) | `REPEATABLE READ READ ONLY`: todas as leituras enxergam o mesmo instante e nenhuma escrita é aceita |
+
+O caso do `Run` aninhado é o do consumidor SQS, que abre a transação para gravar a inbox e chama o caso de uso dentro dela.
+
+- **Base:** "Documente em `ARCHITECTURE.md` a biblioteca escolhida, o mapeamento de `Money` e a delimitação da transação SQL entre os repositórios."
+
+### 2.3. Erros do banco
+
+Os repositórios nunca devolvem um erro do `pgx`. Cada erro é traduzido:
+
+| Situação no PostgreSQL | Erro devolvido |
+| --- | --- |
+| violação de índice único (`23505`) | `app.ErrUniqueViolation`, com o nome da constraint na mensagem |
+| falha de serialização (`40001`), deadlock (`40P01`), prazo de lock vencido (`55P03`) | `app.ErrTransient` |
+| conexão perdida ou recusada, servidor encerrando, prazo ou cancelamento do contexto | `app.ErrTransient` |
+| consulta sem linha | `app.ErrNotFound` |
+| qualquer outro | erro comum, só com o código e o nome da constraint |
+
+A mensagem nunca traz a linha recusada, a URL de conexão nem a senha. O construtor do pool devolve um erro fixo para URL inválida.
+
+### 2.4. Tabelas e o que o banco impõe
+
+Valores monetários são `BIGINT` em unidades mínimas mais `CHAR(3)` com a moeda (seção 1.7). Identificadores internos são `uuid`, gerados na aplicação.
+
+| Tabela | Regras impostas pelo banco |
+| --- | --- |
+| `wallets` | saldo maior ou igual a zero; versão maior ou igual a 1; uma carteira por jogador e moeda |
+| `wager_transactions` | tipo conhecido; estado nunca `PENDING`; valor e saldo resultante não negativos; origem externa exige provedor, id externo, chave, hash, rodada e jogo, e origem interna exige `OPENING` sem nenhum deles; código de falha presente só em `REJECTED` e `FAILED`; `PENDING_REFERENCE` exige prazo e próxima tentativa; reversão processada exige a referência resolvida |
+| `wager_transactions` (índices únicos) | chave por provedor; id externo por provedor; um `OPENING` por carteira; uma reversão `PROCESSED` por referência |
+| `wager_transactions` (trigger) | nenhuma alteração em linha `PROCESSED`, `REJECTED` ou `FAILED` |
+| `wallet_ledger_entries` | valor maior que zero; saldos não negativos; saldo posterior igual ao anterior mais ou menos o valor, conforme a direção; um lançamento por transação e um por versão, em cada carteira |
+| `wallet_ledger_entries` (triggers) | `UPDATE`, `DELETE` e `TRUNCATE` recusados |
+| `inbox` | uma linha por consumidor e mensagem |
+| `outbox` (trigger) | as colunas do evento (id, agregado, grupo, tipo, versão, payload, correlação, causa, ocorrência) não mudam; só as de controle de publicação |
+
+Duas regras desta lista não estão no enunciado e foram acrescentadas porque o código depende delas: o prazo obrigatório em `PENDING_REFERENCE`, que o worker usa para encerrar a espera, e a referência obrigatória numa reversão processada, sem a qual a linha escaparia do índice que impede duas reversões.
+
+- **Por quê no banco:** as regras continuam valendo se o lock da carteira não for tomado, se houver um defeito no código Go ou se alguém escrever direto no banco.
+- **Base:** garantias 3, 5 e 8 da seção 5: "As invariantes financeiras devem ser garantidas no banco", "O ledger deve ser append-only" e "Unicidade, não negatividade e imutabilidade do ledger devem ser impostas pelo schema, pelas constraints e pelos mecanismos de proteção do banco."
+
+### 2.5. Migrations
+
+Cinco migrations em `migrations/`, uma por tabela, cada uma com `up` e `down`. O `down` remove tudo o que o `up` criou, inclusive funções e triggers. Um teste aplica todas, reverte uma a uma até não restar tabela, função, trigger nem índice, e aplica de novo.
+
+Os testes de integração usam PostgreSQL real (`postgres:17.6-alpine`) num container. Cada teste recebe um banco próprio, copiado de um modelo com as migrations já aplicadas, para que um teste não veja os dados de outro.
+
+- **Base:** "Migrations versionadas, com aplicação e reversão documentadas". Os comandos estão no `README.md` (grupo 18 do `tasks.md`).
 
 ## 3. Controle de concorrência e locks
 
 _Pendente (grupo 11 do `tasks.md`)._
 
 ## 4. Idempotência
+
+### 4.1. Hash do conteúdo
+
+Implementado em `internal/app/payloadhash`. Cada operação externa guarda o SHA-256, em hexadecimal, de um JSON canônico dos seus campos de negócio.
+
+| Regra | Como |
+| --- | --- |
+| Campos | `externalTransactionId`, `gameId`, `kind`, `money`, `playerId`, `providerId`, `referenceExternalTransactionId` (só quando existe), `roundId` e `walletId` |
+| Ordem | alfabética em todos os níveis; dentro de `money`, `amount` e depois `currency` |
+| Formato | sem espaços, UTF-8, saída do `encoding/json` da biblioteca padrão |
+| Fora do cálculo | a chave de idempotência e os metadados de transporte: `messageId`, `occurredAt`, headers, `correlationId` |
+
+O JSON é escrito a partir dos valores de domínio já validados, nunca reaproveitado da requisição. Por isso a ordem das chaves, os espaços e a forma como o cliente escreveu o corpo não alteram o hash, e a mesma operação recebida por HTTP e por SQS produz o mesmo hash.
+
+- **Normalização:** `Money` só aceita uma escrita por valor (`25.00`, nunca `25`, `25.0` ou `025.00`), então não há o que normalizar. Os identificadores de texto são comparados exatamente como chegaram. Os UUID (`playerId` e `walletId`) são reescritos na forma canônica, em minúsculas e com hífens (seção 16.2), de modo que duas escritas do mesmo UUID dão o mesmo hash.
+- **Para quem recalcular o hash em outra linguagem:** o `encoding/json` escreve `<`, `>` e `&` dentro de textos como `\u003c`, `\u003e` e `\u0026`.
+- **Exemplo:** `{"externalTransactionId":"transaction-123","gameId":"fortune-chimp","kind":"BET","money":{"amount":"25.00","currency":"BRL"},"playerId":"0192f28f-5dc0-7d58-bdb2-814ad6a0f4a1","providerId":"provider-a","roundId":"round-987","walletId":"0192f291-27dd-7d3f-8071-5f8685deef37"}`
+- **Base:** "Persista um hash determinístico dos campos de negócio, usando JSON canônico com ordenação de chaves. Exclua a chave de idempotência e os metadados de transporte desse cálculo. Documente algoritmo, campos e normalizações, garantindo equivalência entre HTTP e SQS."
+
+### 4.2. Demais regras
 
 _Pendente (grupo 11 do `tasks.md`)._
 
@@ -490,3 +578,24 @@ Um segundo teste alimenta as regras com imports inventados, um permitido e um pr
 
 - **Limitação:** o teste olha os imports diretos. Um pacote da biblioteca padrão que use `net/http` por dentro não é acusado.
 - **Base:** "O domínio deve permanecer independente de Fx, HTTP, SQS e bibliotecas de persistência. A organização dos pacotes fica a critério do candidato." O grafo entre os pacotes é escolha deste projeto.
+
+## 21. Camada de aplicação: portas
+
+`internal/app` define as interfaces que a infraestrutura implementa. Os casos de uso só conhecem essas interfaces, e por isso não importam `pgx`, o SDK da AWS nem `net/http`.
+
+| Porta | O que deve garantir |
+| --- | --- |
+| `TxRunner` | `Run` executa a função numa transação SQL: confirma se ela devolve `nil`, desfaz se devolve erro. Chamado dentro de outra transação, participa dela. `RunReadOnly` dá uma visão única dos dados e não permite escrita |
+| `WalletRepository` | `GetForUpdate` trava a linha da carteira até o fim da transação e falha fora de uma. `Insert` devolve `ErrUniqueViolation` para jogador e moeda repetidos |
+| `TransactionRepository` | as buscas por chave e por identificador externo sempre filtram por provedor. `Insert` e `Update` devolvem `ErrUniqueViolation` quando o banco recusa uma chave, uma operação ou uma segunda reversão processada |
+| `LedgerRepository` | só insere e lê; não há alteração nem exclusão. `Totals` soma em inteiros |
+| `OutboxStore` | `Insert` grava na transação em curso. `Claim` reserva registros por um prazo, sem que dois publishers peguem o mesmo |
+| `InboxStore` | `Register` diz se a mensagem é nova, repetida ou repetida com outro conteúdo; `Complete` marca a conclusão. As duas rodam na transação do tratamento |
+| `Clock` | o instante atual, para que os testes controlem o tempo |
+| `Metrics` | contadores e medidas, com rótulos de conjuntos fechados |
+
+Toda busca que não encontra devolve `app.ErrNotFound`. Falhas passageiras da infraestrutura chegam como `app.ErrTransient`.
+
+`internal/app/apptest` tem implementações em memória dessas portas, usadas só nos testes unitários dos casos de uso. Elas imitam as regras de unicidade do banco e desfazem as escritas quando a transação falha, inclusive o bloco de dentro de um `Run` aninhado. Não imitam tudo: chaves estrangeiras, o prazo de reserva da outbox e a recusa de escrita em `RunReadOnly` só existem no banco real. Os testes de integração usam PostgreSQL real.
+
+- **Base:** "O domínio deve permanecer independente de Fx, HTTP, SQS e bibliotecas de persistência." e, na seção 13, "Não substitua toda a infraestrutura por mocks."
