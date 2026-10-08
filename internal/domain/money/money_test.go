@@ -325,6 +325,28 @@ func TestOperandsAreNotChanged(t *testing.T) {
 	}
 }
 
+func TestResultsKeepTheCurrency(t *testing.T) {
+	a, b := units(t, 1000, "USD"), units(t, 2500, "USD")
+
+	sum, err := a.Add(b)
+	if err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	diff, err := a.Sub(b)
+	if err != nil {
+		t.Fatalf("Sub: %v", err)
+	}
+	neg, err := a.Neg()
+	if err != nil {
+		t.Fatalf("Neg: %v", err)
+	}
+
+	if !sum.Equal(units(t, 3500, "USD")) || !diff.Equal(units(t, -1500, "USD")) || !neg.Equal(units(t, -1000, "USD")) {
+		t.Fatalf("sum, diff, neg = %s %s, %s %s, %s %s, want 35.00 USD, -15.00 USD, -10.00 USD",
+			sum.Amount(), sum.Currency().Code(), diff.Amount(), diff.Currency().Code(), neg.Amount(), neg.Currency().Code())
+	}
+}
+
 func TestUninitialized(t *testing.T) {
 	var none money.Money
 	brl := units(t, 100, "BRL")

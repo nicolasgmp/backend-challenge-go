@@ -72,7 +72,7 @@ Os erros são sentinelas, comparáveis com `errors.Is`:
 
 ### 1.6. JSON
 
-A escrita produz `{"amount":"25.00","currency":"BRL"}`, com `amount` sempre em string. Na leitura, `amount` precisa ser string, os dois campos são obrigatórios e um campo desconhecido é recusado. Um `amount` numérico é recusado na decodificação, sem ser convertido em número. A leitura usa `ParseCurrency` e `Parse`, as mesmas funções das demais entradas.
+A escrita produz `{"amount":"25.00","currency":"BRL"}`, com `amount` sempre em string. Na leitura, `amount` precisa ser string, os dois campos são obrigatórios e um campo desconhecido é recusado. Os nomes são comparados de forma exata (`AMOUNT` é desconhecido) e um campo repetido é recusado, porque o decodificador padrão do Go aceitaria os dois casos. Um `amount` numérico é recusado na decodificação, sem ser convertido em número. A leitura usa `ParseCurrency` e `Parse`, as mesmas funções das demais entradas.
 
 - **Base:** "O contrato externo recebe e devolve valores como `{"amount":"25.00","currency":"BRL"}`."
 

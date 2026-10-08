@@ -4,6 +4,7 @@ import (
 	"cmp"
 	"fmt"
 	"math"
+	"strconv"
 	"strings"
 )
 
@@ -28,46 +29,36 @@ func Parse(amount string, c Currency) (Money, error) {
 		return Money{}, ErrUninitialized
 	}
 
-	digits, negative := strings.CutPrefix(amount, "-")
-	if !strictFormat(digits) {
+	text, negative := strings.CutPrefix(amount, "-")
+	whole, cents, hasPoint := strings.Cut(text, ".")
+	if !hasPoint || len(cents) != 2 || !onlyDigits(whole) || !onlyDigits(cents) || hasLeadingZero(whole) {
 		return Money{}, ErrInvalidAmount
 	}
 	if negative {
 		return Money{}, ErrNegativeAmount
 	}
 
-	var units int64
-	for i := 0; i < len(digits); i++ {
-		if digits[i] == '.' {
-			continue
-		}
-		d := int64(digits[i] - '0')
-		if units > (math.MaxInt64-d)/10 {
-			return Money{}, ErrOverflow
-		}
-		units = units*10 + d
+	units, err := strconv.ParseInt(whole+cents, 10, 64)
+	if err != nil {
+		return Money{}, ErrOverflow
 	}
-
 	return Money{units: units, currency: c}, nil
 }
 
-func strictFormat(s string) bool {
-	point := len(s) - 3
-	if point < 1 || s[point] != '.' {
+func onlyDigits(s string) bool {
+	if s == "" {
 		return false
 	}
-	if point > 1 && s[0] == '0' {
-		return false
-	}
-	for i := 0; i < len(s); i++ {
-		if i == point {
-			continue
-		}
-		if s[i] < '0' || s[i] > '9' {
+	for _, r := range s {
+		if r < '0' || r > '9' {
 			return false
 		}
 	}
 	return true
+}
+
+func hasLeadingZero(whole string) bool {
+	return len(whole) > 1 && whole[0] == '0'
 }
 
 func (m Money) MinorUnits() int64 {
@@ -80,12 +71,11 @@ func (m Money) Currency() Currency {
 
 func (m Money) Amount() string {
 	sign := ""
-	abs := uint64(m.units)
+	whole, cents := m.units/100, m.units%100
 	if m.units < 0 {
-		sign = "-"
-		abs = -abs
+		sign, whole, cents = "-", -whole, -cents
 	}
-	return fmt.Sprintf("%s%d.%02d", sign, abs/100, abs%100)
+	return fmt.Sprintf("%s%d.%02d", sign, whole, cents)
 }
 
 func (m Money) Add(other Money) (Money, error) {

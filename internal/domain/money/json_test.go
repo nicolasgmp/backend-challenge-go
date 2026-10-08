@@ -42,6 +42,9 @@ func TestUnmarshalJSON(t *testing.T) {
 		{"negative amount", `{"amount":"-25.00","currency":"BRL"}`, 0, "", money.ErrNegativeAmount},
 		{"loose format", `{"amount":"25","currency":"BRL"}`, 0, "", money.ErrInvalidAmount},
 		{"unsupported currency", `{"amount":"25.00","currency":"JPY"}`, 0, "", money.ErrInvalidCurrency},
+		{"currency as a number", `{"amount":"25.00","currency":123}`, 0, "", money.ErrInvalidAmount},
+		{"amount null", `{"amount":null,"currency":"BRL"}`, 0, "", money.ErrInvalidAmount},
+		{"not an object", `["25.00","BRL"]`, 0, "", money.ErrInvalidAmount},
 	}
 
 	for _, tt := range tests {
@@ -55,6 +58,18 @@ func TestUnmarshalJSON(t *testing.T) {
 				t.Fatalf("got %d %q, want %d %q", got.MinorUnits(), got.Currency().Code(), tt.wantUnits, tt.wantCode)
 			}
 		})
+	}
+}
+
+func TestUnmarshalJSONKeepsReceiverOnFailure(t *testing.T) {
+	got := units(t, 777, "EUR")
+
+	err := json.Unmarshal([]byte(`{"amount":"25.00","currency":"JPY"}`), &got)
+	if !errors.Is(err, money.ErrInvalidCurrency) {
+		t.Fatalf("err = %v, want %v", err, money.ErrInvalidCurrency)
+	}
+	if !got.Equal(units(t, 777, "EUR")) {
+		t.Fatalf("got %s %s, want 7.77 EUR", got.Amount(), got.Currency().Code())
 	}
 }
 
