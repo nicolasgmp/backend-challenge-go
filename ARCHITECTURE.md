@@ -399,3 +399,94 @@ A carteira não conhece códigos de falha nem tipos de operação. Ela devolve u
 
 - **Por quê:** `wallet` e `wager` não se importam, para que cada agregado proteja seu próprio estado.
 - **Base:** "Seu código de falha deve ser diferente daquele usado para uma aposta sem saldo." A divisão de responsabilidade entre os pacotes é interpretação deste projeto.
+
+## 19. Eventos de domínio
+
+Implementado em `internal/domain/events`. O enunciado trata do assunto na seção 11. A gravação na outbox, a publicação e o roteamento são dos grupos 10, 11 e 16 do `tasks.md` e estão na seção 9, ainda pendente.
+
+### 19.1. Envelope
+
+Todo evento tem `eventId`, `eventType`, `aggregateId`, `correlationId`, `causationId` (omitido quando vazio), `occurredAt`, `version` e `data`.
+
+| Campo | Origem |
+| --- | --- |
+| `eventId` | UUIDv7 gerado na construção |
+| `eventType`, `version` | fixados pelo construtor do evento; quem chama não informa |
+| `aggregateId` | a transação, nos três eventos de transação; a carteira, em `WalletBalanceChanged` |
+| `correlationId` | informado por quem chama; obrigatório |
+| `causationId` | informado por quem chama; opcional |
+| `occurredAt` | instante da construção, em UTC, com precisão de microssegundo |
+
+Os campos do evento são privados. `Header()` devolve uma cópia do envelope, `Data()` devolve o conteúdo, e não há método que altere um evento construído.
+
+O envelope guarda também a carteira do evento, que não vai para o JSON: ela será a chave de agrupamento na fila de saída.
+
+- **Base:** "O envelope deve conter `eventId`, `eventType`, `aggregateId`, `correlationId`, `causationId` opcional, `occurredAt`, `version` e `data` tipado." e "Tipo e versão devem ser definidos pelo construtor do evento."
+
+### 19.2. Um tipo concreto por evento
+
+| Evento | Conteúdo de `data` |
+| --- | --- |
+| `WagerTransactionProcessed` | dados da transação e `balance`, o saldo resultante |
+| `WagerTransactionRejected` | dados da transação e `failureCode` |
+| `WagerTransactionPendingReference` | dados da transação e `referenceExpiresAt` |
+| `WalletBalanceChanged` | `walletId`, `transactionId`, `direction`, `money`, `balanceBefore`, `balanceAfter`, `walletVersion` |
+
+Os dados da transação são `transactionId`, `walletId`, `playerId`, `kind`, `money` e, quando existem, `providerId`, `externalTransactionId`, `roundId`, `gameId` e `referenceExternalTransactionId`. Na abertura de carteira (`OPENING`) esses cinco últimos não existem e são omitidos do JSON.
+
+A construção recusa, com `events.ErrInvalidEvent`: `correlationId` vazio, identificador obrigatório vazio, valor não inicializado, `failureCode` que não é de rejeição, pendência sem referência ou sem prazo, e mudança de saldo com direção desconhecida, valor que não é maior que zero ou versão menor que 1.
+
+- **Por quê o pacote não importa `wager` nem `wallet`:** o evento é montado com valores simples do domínio, então mudar um agregado não muda o contrato publicado sem que alguém altere este pacote.
+- **Base:** "Defina tipos concretos por evento." e "O payload de `WalletBalanceChanged` deve incluir `walletId`, `transactionId`, `direction`, `money`, `balanceBefore`, `balanceAfter` e `walletVersion`."
+
+### 19.3. JSON
+
+Instantes saem em RFC 3339, em UTC. Valores monetários saem como `{"amount":"25.00","currency":"BRL"}`. Os testes comparam o JSON de cada evento, byte a byte, com o esperado.
+
+```json
+{
+  "eventId": "0192f2a0-0000-7000-8000-000000000001",
+  "eventType": "WalletBalanceChanged",
+  "aggregateId": "0192f291-27dd-7d3f-8071-5f8685deef37",
+  "correlationId": "correlation-1",
+  "causationId": "message-1",
+  "occurredAt": "2026-01-01T12:00:00Z",
+  "version": 1,
+  "data": {
+    "walletId": "0192f291-27dd-7d3f-8071-5f8685deef37",
+    "transactionId": "0192f298-345e-7e38-af88-e43f851a819d",
+    "direction": "DEBIT",
+    "money": {"amount": "25.00", "currency": "BRL"},
+    "balanceBefore": {"amount": "1000.00", "currency": "BRL"},
+    "balanceAfter": {"amount": "975.00", "currency": "BRL"},
+    "walletVersion": 2
+  }
+}
+```
+
+- **Base:** "Use timestamps UTC em RFC 3339 e valores monetários em strings decimais."
+
+## 20. Teste de arquitetura
+
+`internal/archtest` roda `go list` sobre o módulo e falha quando um pacote importa o que não deve. Os imports dos arquivos de teste também são conferidos. É um teste comum, executado por `go test ./...`.
+
+| Regra | Motivo |
+| --- | --- |
+| cada pacote de `internal/domain` só importa os pacotes de domínio da tabela abaixo | manter o grafo sem ciclos e os agregados separados |
+| `internal/domain` não importa `net/http` nem seus subpacotes, nem biblioteca externa além de `google/uuid` | regra do enunciado |
+| `internal/domain` não importa as camadas de fora (`app`, `infra`) | idem |
+| `internal/app` não importa `internal/infra` | a aplicação define as portas; a infraestrutura as implementa |
+| `infra/httpapi` não importa `infra/postgres` nem `infra/sqs` | o HTTP fala só com os casos de uso |
+
+| Pacote | Pode importar |
+| --- | --- |
+| `money`, `ids`, `failure` | nenhum pacote de domínio |
+| `ledger` | `money`, `ids` |
+| `wallet` | `money`, `ids`, `ledger` |
+| `wager` | `money`, `ids`, `failure`, `ledger` |
+| `events` | `money`, `ids`, `ledger`, `failure` |
+
+Um segundo teste alimenta as regras com imports inventados, um permitido e um proibido de cada tipo, para provar que elas acusam o que devem.
+
+- **Limitação:** o teste olha os imports diretos. Um pacote da biblioteca padrão que use `net/http` por dentro não é acusado.
+- **Base:** "O domínio deve permanecer independente de Fx, HTTP, SQS e bibliotecas de persistência. A organização dos pacotes fica a critério do candidato." O grafo entre os pacotes é escolha deste projeto.
