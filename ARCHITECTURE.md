@@ -96,11 +96,128 @@ _Pendente (grupo 11 do `tasks.md`)._
 
 ## 5. Máquina de estados da transação
 
-_Pendente (grupo 6 do `tasks.md`)._
+Implementado em `internal/domain/wager`. O enunciado trata do assunto na seção 6.3. A tabela, o `CHECK` que impede `PENDING` gravado e o trigger de estado terminal são do grupo 9 do `tasks.md` e ainda não existem.
+
+### 5.1. Estados e transições
+
+```
+PENDING ──────────────> PROCESSED
+   │ ──────────────────> REJECTED
+   └──> PENDING_REFERENCE ──> PROCESSED
+                          ──> REJECTED
+                          ──> FAILED
+```
+
+| Método | Origem permitida | O que registra |
+| --- | --- | --- |
+| `MarkProcessed` | `PENDING`, `PENDING_REFERENCE` | saldo resultante, referência interna resolvida, instante de conclusão |
+| `MarkRejected` | `PENDING`, `PENDING_REFERENCE` | código de rejeição, instante de conclusão |
+| `MarkPendingReference` | `PENDING` | prazo da espera e próxima tentativa |
+| `MarkFailed` | `PENDING_REFERENCE` | `PROCESSING_FAILED`, instante de conclusão |
+
+Qualquer outra origem devolve `wager.ErrInvalidTransition` e deixa a transação como estava. `PROCESSED`, `REJECTED` e `FAILED` são terminais: nenhum método sai deles. Não existe método que volte a `PENDING`.
+
+- **`PENDING` só existe em memória.** É o estado em que a transação nasce. Uma operação sem dependência é concluída no mesmo commit, então o banco nunca guarda `PENDING`.
+- **`MarkRejected` só aceita código de rejeição.** Código vazio, desconhecido, de entrada inválida ou `PROCESSING_FAILED` são recusados.
+- **Base:** "A transação inicia em `PENDING`. As transições para processamento, espera por referência, rejeição e falha permanente devem ser validadas pelo domínio.", "Uma transação terminal não deve sofrer novas transições." e "Operações sem dependências podem ser concluídas de forma síncrona, sem commit intermediário de aceite."
+
+### 5.2. Criação e reidratação
+
+- **`NewExternal`** cria a operação de um provedor em `PENDING`. Julga só o que dá para julgar olhando a requisição: tipo que não é externo (`UNSUPPORTED_KIND`), valor fora da política do tipo (`INVALID_AMOUNT_FOR_KIND`) e referência faltando ou sobrando (`MISSING_REFERENCE`, `UNEXPECTED_REFERENCE`). São entradas inválidas: nada é gravado. Carteira, jogador, dado do provedor ou `correlationId` vazio devolve `wager.ErrInvalidTransaction`, que indica defeito de quem chamou, não erro do cliente.
+- **`NewOpening`** cria a transação interna de abertura: sem provedor, id externo, chave, hash, rodada, jogo ou referência, com valor maior que zero, já em `PROCESSED`.
+- **`correlationId`:** as duas criações recebem o identificador de correlação da requisição e o guardam na transação. O worker que resolve uma pendência minutos depois usa esse valor nos eventos que emite, para que eles continuem ligados à requisição original.
+- **`Rehydrate`** reproduz o estado gravado sem aplicar transição. Recusa estado incoerente: identificador ou instante ausente, valor negativo ou não inicializado, tipo ou estado desconhecido, operação externa sem os dados do provedor, `OPENING` com dados de provedor, `REJECTED` ou `FAILED` sem código de falha, código de falha em outro estado, e `PENDING_REFERENCE` sem prazo.
+
+| Tipo | Valor | Referência |
+| --- | --- | --- |
+| `BET` | maior que zero | não aceita |
+| `WIN` | maior que zero | opcional |
+| `LOSS` | exatamente zero | não aceita |
+| `REFUND` | maior que zero | obrigatória |
+| `ROLLBACK` | maior que zero | obrigatória |
+
+- **Base:** "`OPENING` é reservado à abertura interna de carteira. Rejeite esse tipo quando enviado por HTTP ou SQS.", "zero é aceito no saldo inicial e em `LOSS`; `BET`, `WIN`, `REFUND` e `ROLLBACK` exigem valor maior que zero." e "Separe criação e reidratação."
+
+### 5.3. Falha transitória e falha permanente
+
+`FAILED` só é alcançado a partir de `PENDING_REFERENCE`, quando a resolução de uma pendência esbarra em erro inesperado cinco vezes seguidas.
+
+| Situação na tentativa de resolver | Método | Efeito |
+| --- | --- | --- |
+| referência ainda ausente, ou erro transitório | `Reschedule` | conta a tentativa, zera os erros inesperados, marca a próxima tentativa |
+| erro inesperado | `RecordUnexpectedError` | conta a tentativa e o erro; devolve verdadeiro no quinto seguido |
+| quinto erro inesperado seguido | `MarkFailed` | `FAILED` com `PROCESSING_FAILED` |
+
+A classificação de um erro como transitório (conexão perdida, timeout, deadlock, `lock_timeout`) ou inesperado (todo o resto) é feita na camada de aplicação, no grupo 11; o domínio só conta.
+
+Numa operação síncrona, uma falha de infraestrutura desfaz a transação SQL e nada é gravado: não existe `FAILED` para esse caso, e quem enviou pode reenviar.
+
+- **Interpretação adotada:** o enunciado define `FAILED` mas não diz que fluxo o produz. Gravar `FAILED` para uma operação síncrona impediria o reenvio do mesmo `externalTransactionId`, então o estado ficou restrito à pendência que não consegue ser resolvida. O limite de cinco é escolha deste projeto.
+- **Base:** "`FAILED`: Falha permanente de infraestrutura registrada para auditoria; estado terminal" e "Documente a máquina de estados e como distingue falhas transitórias de falhas permanentes."
+
+### 5.4. Intervalo entre tentativas
+
+`wager.NextAttempt` devolve o instante da próxima tentativa: 1 segundo depois da primeira, dobrando a cada tentativa (2, 4, 8, 16) até o teto de 30 segundos, e nunca depois do prazo da espera. Quando o intervalo passaria do prazo, a próxima tentativa é o próprio prazo; é a última.
+
+- **Base:** "Um worker deve tentar novamente com backoff exponencial". Os valores de 1 e 30 segundos são escolha deste projeto. O prazo e o worker são dos grupos 11 e 16 do `tasks.md` e serão descritos na seção 7.
 
 ## 6. Reversões (`REFUND` e `ROLLBACK`)
 
-_Pendente (grupo 6 do `tasks.md`)._
+As regras estão em `internal/domain/wager` (`EffectOf` e `ValidateReference`). O enunciado trata do assunto na seção 7. A busca da referência no banco, a checagem de saldo e o índice único são dos grupos 9 a 11 do `tasks.md`.
+
+### 6.1. O que cada tipo movimenta
+
+| Tipo | Referência | Movimento |
+| --- | --- | --- |
+| `BET` | nenhuma | débito |
+| `LOSS` | nenhuma | nenhum |
+| `WIN` | nenhuma ou `BET` | crédito |
+| `REFUND` | `BET` | crédito |
+| `ROLLBACK` | `BET` | crédito |
+| `ROLLBACK` | `WIN` | débito |
+| `ROLLBACK` | `REFUND` | débito |
+
+Qualquer combinação fora da tabela é rejeitada com `REFERENCE_KIND_NOT_ALLOWED`: `REFUND` de um `WIN`, `ROLLBACK` de um `ROLLBACK` ou de um `LOSS`, e assim por diante.
+
+- **Base:** a tabela da seção 7 do enunciado: "`REFUND`: Devolve integralmente o valor de uma `BET` processada" e "`ROLLBACK`: Movimento contrário ao original. Desfaz integralmente uma `BET`, `WIN` ou `REFUND` processada".
+
+### 6.2. Validação da referência
+
+`ValidateReference` confere, nesta ordem, e para na primeira falha:
+
+| Ordem | Situação da referência | Resultado |
+| --- | --- | --- |
+| 1 | ainda em `PENDING_REFERENCE` | a operação continua esperando (`wager.ErrReferencePending`) |
+| 2 | `REJECTED` ou `FAILED` | `REFERENCE_NOT_PROCESSED` |
+| 3 | tipo fora da tabela de 6.1 | `REFERENCE_KIND_NOT_ALLOWED` |
+| 4 | provedor, jogador, carteira, moeda ou rodada diferentes | `REFERENCE_MISMATCH` |
+| 5 | valor diferente | `REFERENCE_MISMATCH` |
+
+A referência inexistente é tratada antes, pela camada de aplicação, que grava a operação como `PENDING_REFERENCE` (seção 7).
+
+- **`WIN` com referência não confere valor.** O ganho não tem relação com o valor apostado; a referência só amarra o ganho a uma aposta processada da mesma rodada.
+- **Base:** "A operação e sua referência devem concordar em provedor, jogador, carteira, moeda e rodada. O valor da reversão precisa ser igual ao valor referenciado; reversões parciais não fazem parte do desafio."
+
+### 6.3. Uma reversão processada por operação
+
+Cada operação aceita no máximo uma reversão em `PROCESSED`, seja `REFUND` ou `ROLLBACK`. Um `BET` já reembolsado que recebe um `ROLLBACK` tem o `ROLLBACK` rejeitado com `REFERENCE_ALREADY_REVERSED`, e o mesmo vale para a ordem inversa e para dois `REFUND`. Reversões rejeitadas ou pendentes não ocupam a vaga.
+
+A regra será imposta pelo banco, com um índice único parcial sobre a referência interna resolvida (grupo 9). Por isso `MarkProcessed` recusa concluir um `REFUND` ou `ROLLBACK` sem a referência resolvida: sem ela a linha escaparia do índice.
+
+- **Interpretação adotada:** o enunciado exige no mínimo que não haja duas reversões bem-sucedidas do mesmo tipo. Aqui a regra é mais restritiva: uma de qualquer tipo. `REFUND` e `ROLLBACK` de um `BET` devolvem o mesmo débito, então aceitar os dois seria devolver em dobro.
+- **Base:** "Garanta que uma referência não receba duas reversões bem-sucedidas do mesmo tipo. Documente como trata combinações de `REFUND` e `ROLLBACK` sobre a mesma aposta, preservando a coerência financeira e impedindo devolução duplicada do mesmo débito."
+
+### 6.4. Limitação: aposta reembolsada não volta a ser reversível
+
+Quando o `REFUND` de um `BET` é desfeito por um `ROLLBACK`, o `BET` continua com sua vaga de reversão ocupada pelo `REFUND`, que segue `PROCESSED`. Um novo `REFUND` desse `BET` é rejeitado com `REFERENCE_ALREADY_REVERSED`.
+
+- **Por quê:** liberar a vaga exigiria alterar o `REFUND`, que é uma linha terminal. O provedor que precisar reembolsar de novo envia um crédito por outro caminho.
+
+### 6.5. Reversão sem saldo
+
+Um `ROLLBACK` de `WIN` ou de `REFUND` debita a carteira. Se o saldo não cobre, a transação é gravada como `REJECTED` com `REVERSAL_INSUFFICIENT_FUNDS`, código diferente do `INSUFFICIENT_FUNDS` de uma aposta. A escolha entre os dois códigos é feita na camada de aplicação (grupo 11), conforme o tipo da operação.
+
+- **Base:** "Uma reversão que precisaria debitar mais que o saldo disponível deve ser rejeitada e auditável. Seu código de falha deve ser diferente daquele usado para uma aposta sem saldo."
 
 ## 7. Referências pendentes
 

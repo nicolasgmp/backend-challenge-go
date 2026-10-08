@@ -48,6 +48,17 @@ func ParseCode(s string) (Code, error) {
 	}
 }
 
+func (c Code) IsRejection() bool {
+	switch c {
+	case InsufficientFunds, ReversalInsufficientFunds, BalanceOverflow,
+		PlayerWalletMismatch, CurrencyMismatch, ReferenceNotFound, ReferenceNotProcessed,
+		ReferenceMismatch, ReferenceKindNotAllowed, ReferenceAlreadyReversed:
+		return true
+	default:
+		return false
+	}
+}
+
 type InvalidInputError struct {
 	Code Code
 }

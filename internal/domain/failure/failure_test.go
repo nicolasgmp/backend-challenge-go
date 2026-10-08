@@ -55,6 +55,36 @@ func TestParseCode(t *testing.T) {
 	}
 }
 
+func TestIsRejection(t *testing.T) {
+	tests := []struct {
+		code failure.Code
+		want bool
+	}{
+		{failure.InsufficientFunds, true},
+		{failure.ReversalInsufficientFunds, true},
+		{failure.BalanceOverflow, true},
+		{failure.PlayerWalletMismatch, true},
+		{failure.CurrencyMismatch, true},
+		{failure.ReferenceNotFound, true},
+		{failure.ReferenceNotProcessed, true},
+		{failure.ReferenceMismatch, true},
+		{failure.ReferenceKindNotAllowed, true},
+		{failure.ReferenceAlreadyReversed, true},
+		{failure.InvalidMoney, false},
+		{failure.WalletNotFound, false},
+		{failure.ProcessingFailed, false},
+		{failure.Code(""), false},
+	}
+
+	for _, tt := range tests {
+		t.Run(string(tt.code), func(t *testing.T) {
+			if got := tt.code.IsRejection(); got != tt.want {
+				t.Fatalf("IsRejection() = %t, want %t", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestRejectionError(t *testing.T) {
 	wrapped := fmt.Errorf("apply bet: %w", failure.RejectionError{Code: failure.InsufficientFunds})
 
