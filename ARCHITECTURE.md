@@ -501,11 +501,14 @@ As chaves públicas são buscadas no Keycloak no primeiro uso e guardadas em mem
 | Situação | Erro | Resposta HTTP |
 | --- | --- | --- |
 | token ausente ou inválido | `auth.ErrInvalidToken` | `401` |
-| chaves do IdP inacessíveis e nenhuma em memória | `app.ErrIdPUnavailable` | `503` |
+| chaves do IdP inacessíveis e necessárias para decidir | `app.ErrIdPUnavailable` | `503` |
 
-Um token nunca é aceito sem validação. Com as chaves já em memória, o serviço continua validando tokens enquanto o IdP estiver fora do ar.
+Um token nunca é aceito sem validação. Com as chaves já em memória, o serviço continua aceitando tokens válidos enquanto o IdP estiver fora do ar.
 
-Os testes de integração rodam contra um Keycloak real, com o mesmo arquivo de realm do Compose, e cobrem cada linha das duas tabelas.
+- **Limitação:** quando a assinatura de um token não confere com nenhuma chave em memória, a biblioteca busca as chaves de novo, porque pode ter havido troca de chave. Se o IdP estiver fora do ar nesse momento, a resposta é `503` em vez de `401`. Nos dois casos a requisição é negada. Cada token com assinatura inválida custa uma consulta de chaves ao Keycloak.
+- **Ambiente local:** o realm aceita HTTP sem TLS (`sslRequired: none`), o que só é adequado para a stack local.
+
+Os testes de integração rodam contra um Keycloak real, com o mesmo arquivo de realm do Compose: token válido, adulterado, expirado, de outro realm, com emissor diferente do configurado, com outra audiência, sem assinatura, e IdP parado com e sem chaves em memória.
 
 - **Limitação:** para distinguir "IdP inacessível" de "token inválido", o código procura o trecho `fetching keys` na mensagem de erro da biblioteca, que não oferece um tipo de erro para isso. O teste de integração com o Keycloak parado acusa se uma versão futura mudar o texto.
 
@@ -762,7 +765,11 @@ O que nunca é logado:
 
 - valores monetários: valor da operação, saldo, diferença de reconciliação;
 - o corpo de requisições, mensagens ou eventos;
-- tokens e credenciais. Segredos de configuração usam o tipo `Secret`, que escreve `[REDACTED]` em `String`, `%v`, `%+v`, `%#v`, JSON e `slog`; o valor só sai por `Reveal()`, chamado onde a conexão é aberta.
+- tokens e credenciais. Segredos de configuração usam o tipo `Secret`, que escreve `[REDACTED]` em `String`, `%s`, `%v`, `%+v`, `%#v`, JSON e `slog`; o valor só sai por `Reveal()`, chamado onde a conexão é aberta.
+
+Limitações do `Secret`: ele não protege contra verbos numéricos do `fmt` (`%d`, `%x` sobre o campo interno) nem quando está num campo **não exportado** de outra struct, caso em que o `fmt` não consegue chamar seus métodos. Por isso os campos de segredo da configuração são exportados.
+
+Um identificador posto no contexto não deve ser passado de novo como argumento do log: a chave sairia duas vezes na linha.
 
 Os testes conferem isso: o do caso de uso processa uma aposta, um replay e uma rejeição e procura os valores nas linhas de log; `logtest.AssertNoLeak` faz a mesma checagem nos testes de integração.
 
