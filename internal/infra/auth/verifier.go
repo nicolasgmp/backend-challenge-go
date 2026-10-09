@@ -1,0 +1,71 @@
+package auth
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"strings"
+	"time"
+
+	"github.com/coreos/go-oidc/v3/oidc"
+
+	"jungle-gaming-challeng/internal/app"
+	"jungle-gaming-challeng/internal/domain/ids"
+)
+
+const keysUnavailableMarker = "fetching keys"
+
+var ErrInvalidToken = errors.New("auth: invalid token")
+
+type Config struct {
+	IssuerURL string
+	KeysURL   string
+	Audience  string
+	Now       func() time.Time
+}
+
+type Verifier struct {
+	verifier *oidc.IDTokenVerifier
+}
+
+type claims struct {
+	ProviderID string `json:"provider_id"`
+	Scope      string `json:"scope"`
+}
+
+func NewVerifier(ctx context.Context, cfg Config) *Verifier {
+	keys := oidc.NewRemoteKeySet(ctx, cfg.KeysURL)
+	return &Verifier{verifier: oidc.NewVerifier(cfg.IssuerURL, keys, &oidc.Config{ClientID: cfg.Audience, Now: cfg.Now})}
+}
+
+func (v *Verifier) Verify(ctx context.Context, rawToken string) (app.Caller, error) {
+	token, err := v.verifier.Verify(ctx, rawToken)
+	if err != nil {
+		return app.Caller{}, classify(err)
+	}
+	var parsed claims
+	if err := token.Claims(&parsed); err != nil {
+		return app.Caller{}, ErrInvalidToken
+	}
+	return callerFrom(parsed)
+}
+
+func classify(err error) error {
+	if strings.Contains(err.Error(), keysUnavailableMarker) {
+		return fmt.Errorf("%w: signing keys could not be fetched", app.ErrIdPUnavailable)
+	}
+	return ErrInvalidToken
+}
+
+func callerFrom(parsed claims) (app.Caller, error) {
+	caller := app.Caller{Scopes: strings.Fields(parsed.Scope)}
+	if parsed.ProviderID == "" {
+		return caller, nil
+	}
+	providerID, err := ids.ParseProviderID(parsed.ProviderID)
+	if err != nil {
+		return app.Caller{}, ErrInvalidToken
+	}
+	caller.ProviderID = providerID
+	return caller, nil
+}
