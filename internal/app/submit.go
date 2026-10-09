@@ -41,10 +41,9 @@ func (s *Service) SubmitTransaction(ctx context.Context, in SubmitInput) (Submit
 		return SubmitResult{}, err
 	}
 
-	result, err := s.submitOnce(ctx, in)
+	result, err := s.submit(ctx, in)
 	if errors.Is(err, ErrUniqueViolation) {
 		s.Metrics.ConcurrencyConflict(ConflictUniqueViolation)
-		result, err = s.submitOnce(ctx, in)
 	}
 	s.observeSubmit(ctx, in, result, err, s.Clock.Now().Sub(started))
 	if err != nil {
@@ -53,7 +52,7 @@ func (s *Service) SubmitTransaction(ctx context.Context, in SubmitInput) (Submit
 	return result, nil
 }
 
-func (s *Service) submitOnce(ctx context.Context, in SubmitInput) (SubmitResult, error) {
+func (s *Service) submit(ctx context.Context, in SubmitInput) (SubmitResult, error) {
 	var result SubmitResult
 	err := s.Tx.Run(ctx, func(ctx context.Context) error {
 		w, err := s.Wallets.GetForUpdate(ctx, in.WalletID)

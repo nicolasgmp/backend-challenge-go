@@ -15,8 +15,6 @@ const (
 	CodeUnauthorized       = "UNAUTHORIZED"
 	CodeInsufficientScope  = "INSUFFICIENT_SCOPE"
 	CodeProviderMismatch   = "PROVIDER_MISMATCH"
-	CodeNotFound           = "NOT_FOUND"
-	CodeMethodNotAllowed   = "METHOD_NOT_ALLOWED"
 	CodeServiceUnavailable = "SERVICE_UNAVAILABLE"
 	CodeInternalError      = "INTERNAL_ERROR"
 

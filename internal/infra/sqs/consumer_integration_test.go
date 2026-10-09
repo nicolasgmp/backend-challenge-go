@@ -156,10 +156,7 @@ func TestEnsureQueuesIsIdempotent(t *testing.T) {
 	if err := Ping(ctx, client, first.InboundURL+"-missing"); !errors.Is(err, app.ErrTransient) {
 		t.Fatalf("Ping of a missing queue: err = %v, want %v", err, app.ErrTransient)
 	}
-	unreachable, err := NewClient(Config{Endpoint: "http://127.0.0.1:1", Region: "us-east-1", AccessKeyID: "local", SecretAccessKey: "local"})
-	if err != nil {
-		t.Fatalf("NewClient: %v", err)
-	}
+	unreachable := NewClient(Config{Endpoint: "http://127.0.0.1:1", Region: "us-east-1", AccessKeyID: "local", SecretAccessKey: "local"})
 	short, cancel := context.WithTimeout(ctx, 3*time.Second)
 	defer cancel()
 	if err := Ping(short, unreachable, first.InboundURL); !errors.Is(err, app.ErrTransient) {
@@ -294,10 +291,7 @@ func TestPublisherRoutesByWalletAndDeduplicatesByEvent(t *testing.T) {
 		t.Fatalf("queue depth = %d, want the republication within five minutes dropped by the broker", depth(t, client, queues.EventsURL))
 	}
 
-	unreachable, err := NewClient(Config{Endpoint: "http://127.0.0.1:1", Region: "us-east-1", AccessKeyID: "local", SecretAccessKey: "local"})
-	if err != nil {
-		t.Fatalf("NewClient: %v", err)
-	}
+	unreachable := NewClient(Config{Endpoint: "http://127.0.0.1:1", Region: "us-east-1", AccessKeyID: "local", SecretAccessKey: "local"})
 	short, cancel := context.WithTimeout(ctx, 3*time.Second)
 	defer cancel()
 	if err := NewPublisher(unreachable, queues.EventsURL).Publish(short, record); !errors.Is(err, app.ErrTransient) {

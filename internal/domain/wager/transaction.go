@@ -156,9 +156,6 @@ func (s State) coherent() bool {
 	if s.Kind.IsExternal() && !s.External.complete() {
 		return false
 	}
-	if s.Status == PendingReference && s.ReferenceExpiresAt.IsZero() {
-		return false
-	}
 	closedWithFailure := s.Status == Rejected || s.Status == Failed
 	return closedWithFailure == (s.FailureCode != "")
 }

@@ -80,30 +80,5 @@ func (a *API) Handler() http.Handler {
 		}
 		mux.HandleFunc(route.Method+" "+route.Path, handler)
 	}
-	return withCorrelation(a.withRecovery(a.withTimeout(notFoundAsProblem(mux))))
-}
-
-func notFoundAsProblem(mux *http.ServeMux) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if _, pattern := mux.Handler(r); pattern != "" {
-			mux.ServeHTTP(w, r)
-			return
-		}
-		if matchesAnotherMethod(mux, r) {
-			writeProblem(w, r, http.StatusMethodNotAllowed, CodeMethodNotAllowed)
-			return
-		}
-		writeProblem(w, r, http.StatusNotFound, CodeNotFound)
-	})
-}
-
-func matchesAnotherMethod(mux *http.ServeMux, r *http.Request) bool {
-	for _, method := range []string{http.MethodGet, http.MethodPost} {
-		probe := r.Clone(r.Context())
-		probe.Method = method
-		if _, pattern := mux.Handler(probe); pattern != "" {
-			return true
-		}
-	}
-	return false
+	return withCorrelation(a.withRecovery(a.withTimeout(mux)))
 }

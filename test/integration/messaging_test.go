@@ -493,10 +493,7 @@ func TestEventsLeaveAfterTheBrokerComesBack(t *testing.T) {
 	ctx := context.Background()
 	m := newMessaging(t)
 	w := m.open(t, "0.00")
-	unreachable, err := sqs.NewClient(sqs.Config{Endpoint: "http://127.0.0.1:1", Region: sqstest.Region, AccessKeyID: "local", SecretAccessKey: "local"})
-	if err != nil {
-		t.Fatalf("NewClient: %v", err)
-	}
+	unreachable := sqs.NewClient(sqs.Config{Endpoint: "http://127.0.0.1:1", Region: sqstest.Region, AccessKeyID: "local", SecretAccessKey: "local"})
 	offline := m.outboxPublisher(sqs.NewPublisher(unreachable, m.queues.EventsURL), m.service.Outbox, time.Second)
 
 	m.submit(t, operation(t, w, wager.Win, "1.00", "tx-1", ""))

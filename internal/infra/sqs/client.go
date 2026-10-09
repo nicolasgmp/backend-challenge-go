@@ -3,7 +3,6 @@ package sqs
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -27,8 +26,6 @@ const (
 	MaxReceiveCount   = 5
 )
 
-var ErrInvalidConfig = errors.New("sqs: invalid configuration")
-
 type Config struct {
 	Endpoint        string
 	Region          string
@@ -44,10 +41,7 @@ type Queues struct {
 	EventsDLQURL  string
 }
 
-func NewClient(cfg Config) (*awssqs.Client, error) {
-	if cfg.Endpoint == "" || cfg.Region == "" || cfg.AccessKeyID == "" || cfg.SecretAccessKey == "" {
-		return nil, ErrInvalidConfig
-	}
+func NewClient(cfg Config) *awssqs.Client {
 	options := awssqs.Options{
 		Region:       cfg.Region,
 		BaseEndpoint: aws.String(cfg.Endpoint),
@@ -56,7 +50,7 @@ func NewClient(cfg Config) (*awssqs.Client, error) {
 	if cfg.HTTPClient != nil {
 		options.HTTPClient = cfg.HTTPClient
 	}
-	return awssqs.New(options), nil
+	return awssqs.New(options)
 }
 
 func EnsureQueues(ctx context.Context, client *awssqs.Client) (Queues, error) {

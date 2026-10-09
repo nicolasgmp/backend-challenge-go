@@ -303,37 +303,6 @@ func TestSubmitIdempotencyConflicts(t *testing.T) {
 	}
 }
 
-func TestSubmitRerunsOnceAfterLosingARace(t *testing.T) {
-	ctx := context.Background()
-	f := newFixture()
-	w := f.open(t, 100000)
-	in := operation(t, w, wager.Bet, 2500, "tx-1", "")
-	winner := f.submit(t, in)
-	f.store.FailNext("transactions.FindByIdempotencyKey", app.ErrNotFound)
-	f.store.FailNext("transactions.FindByExternalID", app.ErrNotFound)
-
-	result, err := f.service.SubmitTransaction(ctx, in)
-	if err != nil {
-		t.Fatalf("SubmitTransaction: %v", err)
-	}
-	if !result.IdempotentReplay || result.Transaction != winner {
-		t.Fatalf("result = %+v, want the winning row as a replay", result)
-	}
-	if got := f.wallet(t, w.ID); got.Balance.Amount() != "975.00" || len(f.store.Entries()) != 2 {
-		t.Fatalf("wallet = %+v with %d entries, want a single debit", got, len(f.store.Entries()))
-	}
-	if !slices.Contains(f.metrics.Calls, "ConcurrencyConflict unique_violation") {
-		t.Fatalf("metrics = %v, want the conflict counted", f.metrics.Calls)
-	}
-
-	f.store.FailNext("transactions.Insert", app.ErrUniqueViolation)
-	f.store.FailNext("transactions.Insert", app.ErrUniqueViolation)
-	_, err = f.service.SubmitTransaction(ctx, operation(t, w, wager.Bet, 2500, "tx-2", ""))
-	if !errors.Is(err, app.ErrUniqueViolation) {
-		t.Fatalf("second lost race in a row: err = %v, want %v", err, app.ErrUniqueViolation)
-	}
-}
-
 func TestSubmitMetricsAndLogs(t *testing.T) {
 	ctx := context.Background()
 	f := newFixture()

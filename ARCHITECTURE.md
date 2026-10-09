@@ -27,7 +27,7 @@ O que o banco impõe, independentemente do código Go:
 | Tabela | Regras |
 | --- | --- |
 | `wallets` | saldo ≥ 0; versão ≥ 1; uma carteira por `(player_id, currency)` |
-| `wager_transactions` | únicos `(provider_id, idempotency_key)` e `(provider_id, external_transaction_id)`; um `OPENING` por carteira; uma reversão `PROCESSED` por referência; origem externa exige os dados do provedor e origem interna os proíbe; `failure_code` só em `REJECTED`/`FAILED`; nunca `PENDING`; trigger bloqueia alteração de linha terminal |
+| `wager_transactions` | únicos `(provider_id, idempotency_key)` e `(provider_id, external_transaction_id)`; um `OPENING` por carteira; uma reversão `PROCESSED` por referência; origem externa exige os dados do provedor e origem interna os proíbe; valor ≥ 0; nunca `PENDING` |
 | `wallet_ledger_entries` | valor > 0; `balance_after = balance_before ± amount`; únicos `(wallet_id, transaction_id)` e `(wallet_id, wallet_version)`; triggers bloqueiam `UPDATE`, `DELETE` e `TRUNCATE` |
 | `inbox` | chave `(consumer_name, message_id)` |
 | `outbox` | trigger bloqueia alteração das colunas do evento |
@@ -55,7 +55,7 @@ COMMIT
 - Operações da mesma carteira entram em fila; carteiras diferentes não se esperam. Não há lock global nem em memória, então vale entre instâncias.
 - A mesma trava põe em fila a checagem de idempotência e a de reversão anterior. Por isso não se usou controle otimista nem `UPDATE` condicionado.
 - Lock não obtido no prazo: a operação falha como indisponibilidade transitória, sem gravar nada.
-- **Disputa que o lock não cobre:** a mesma chave enviada para duas carteiras diferentes. O índice único deixa passar uma; a outra desfaz a transação e executa de novo, uma única vez, e então encontra a linha vencedora.
+- **Disputa que o lock não cobre:** a mesma chave enviada ao mesmo tempo para duas carteiras diferentes. O índice único deixa passar uma; a outra desfaz a transação e responde indisponibilidade transitória (`503`, ou retry no SQS). No reenvio ela encontra a linha vencedora e recebe o conflito.
 - As constraints da seção 2 são a segunda barreira: valem mesmo que o lock não seja tomado.
 
 ## 4. Idempotência
@@ -84,7 +84,7 @@ PENDING ──────────────> PROCESSED
                           ──> FAILED
 ```
 
-- As transições são métodos do agregado (`MarkProcessed`, `MarkRejected`, `MarkPendingReference`, `MarkFailed`); qualquer outra devolve `ErrInvalidTransition`. `PROCESSED`, `REJECTED` e `FAILED` são terminais, no domínio e no banco.
+- As transições são métodos do agregado (`MarkProcessed`, `MarkRejected`, `MarkPendingReference`, `MarkFailed`); qualquer outra devolve `ErrInvalidTransition`. `PROCESSED`, `REJECTED` e `FAILED` são terminais: nenhum método do agregado sai deles.
 - **`PENDING` nunca é gravado:** operação sem dependência é concluída num único commit.
 - **Criação e reidratação separadas:** `NewExternal`/`NewOpening` validam e criam; `Rehydrate` só reproduz o estado gravado.
 - **`OPENING`** é interno: sem provedor, id externo, chave, hash, rodada, jogo ou referência. Enviado por HTTP ou SQS, é recusado.
@@ -239,7 +239,7 @@ Erros (`400`, `401`, `403`, `404`, `409`, `503`) em `application/problem+json` (
 {"type":"about:blank","title":"Service Unavailable","status":503,"code":"SERVICE_UNAVAILABLE","correlationId":"..."}
 ```
 
-- **Entrada:** corpo com limite de tamanho; campo desconhecido é recusado.
+- **Entrada:** corpo com limite de tamanho; campo desconhecido é recusado. Rota ou método inexistente recebe o `404`/`405` padrão do roteador.
 - **Ledger:** ordenado pela versão da carteira; `limit` de 1 a 200 (padrão 50); `nextCursor` opaco (a última versão vista, em base64). Lançamento criado durante a navegação aparece nas páginas seguintes, sem repetição.
 - **Reconciliação:** soma créditos menos débitos do ledger numa leitura consistente, compara com o saldo e não altera nada. Divergência vai para a resposta, o log e uma métrica.
 - **Correlação:** `X-Correlation-Id` é aceito ou gerado, devolvido na resposta e propagado a logs e eventos.

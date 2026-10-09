@@ -112,7 +112,7 @@ func newPool(lc fx.Lifecycle, cfg Config, logger *slog.Logger) (*pgxpool.Pool, e
 	return pool, nil
 }
 
-func newSQSClient(lc fx.Lifecycle, cfg Config, logger *slog.Logger) (*awssqs.Client, error) {
+func newSQSClient(lc fx.Lifecycle, cfg Config, logger *slog.Logger) *awssqs.Client {
 	transport := http.DefaultTransport.(*http.Transport).Clone()
 	lc.Append(fx.StopHook(func() {
 		transport.CloseIdleConnections()

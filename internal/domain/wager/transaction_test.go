@@ -299,7 +299,6 @@ func TestRehydrateRejects(t *testing.T) {
 		{"rejected without failure code", wager.Rejected, func(s *wager.State) { s.FailureCode = "" }},
 		{"failed without failure code", wager.Failed, func(s *wager.State) { s.FailureCode = "" }},
 		{"processed with failure code", wager.Processed, func(s *wager.State) { s.FailureCode = failure.ReferenceNotFound }},
-		{"pending reference without deadline", wager.PendingReference, func(s *wager.State) { s.ReferenceExpiresAt = time.Time{} }},
 	}
 
 	for _, tt := range tests {

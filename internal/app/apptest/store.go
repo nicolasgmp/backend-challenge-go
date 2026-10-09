@@ -199,12 +199,8 @@ func (r transactionRepository) Update(_ context.Context, tx *wager.Transaction) 
 		return err
 	}
 	state := tx.State()
-	stored, found := r.store.data.transactions[state.ID]
-	if !found {
+	if _, found := r.store.data.transactions[state.ID]; !found {
 		return app.ErrNotFound
-	}
-	if stored.Status.IsTerminal() {
-		return errors.New("apptest: terminal transaction cannot change")
 	}
 	if r.reversalTaken(state) {
 		return app.ErrUniqueViolation

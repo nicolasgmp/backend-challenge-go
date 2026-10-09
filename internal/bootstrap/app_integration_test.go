@@ -37,13 +37,10 @@ func newStack(t *testing.T) stack {
 	ctx := context.Background()
 	keycloak := kctest.Start(ctx, t, "../../deploy/keycloak/wallet-realm.json")
 	endpoint := sqstest.StartEndpoint(ctx, t)
-	client, err := sqs.NewClient(sqs.Config{
+	client := sqs.NewClient(sqs.Config{
 		Endpoint: endpoint, Region: sqstest.Region,
 		AccessKeyID: sqstest.LocalAccessKeyID, SecretAccessKey: sqstest.LocalSecretAccessKey,
 	})
-	if err != nil {
-		t.Fatalf("NewClient: %v", err)
-	}
 	if _, err := sqs.EnsureQueues(ctx, client); err != nil {
 		t.Fatalf("EnsureQueues: %v", err)
 	}

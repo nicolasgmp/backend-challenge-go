@@ -51,12 +51,6 @@ CREATE TABLE wager_transactions (
             AND reference_transaction_id IS NULL
         )
     ),
-    CONSTRAINT wager_transactions_failure_code_matches_status CHECK (
-        (status IN ('REJECTED', 'FAILED')) = (failure_code IS NOT NULL)
-    ),
-    CONSTRAINT wager_transactions_pending_reference_has_deadline CHECK (
-        status <> 'PENDING_REFERENCE' OR (reference_expires_at IS NOT NULL AND next_attempt_at IS NOT NULL)
-    ),
     CONSTRAINT wager_transactions_processed_reversal_has_reference CHECK (
         status <> 'PROCESSED' OR kind NOT IN ('REFUND', 'ROLLBACK') OR reference_transaction_id IS NOT NULL
     )
@@ -79,15 +73,3 @@ CREATE UNIQUE INDEX wager_transactions_one_processed_reversal
 CREATE INDEX wager_transactions_pending_reference_due
     ON wager_transactions (next_attempt_at)
     WHERE status = 'PENDING_REFERENCE';
-
-CREATE FUNCTION wager_transactions_block_terminal_update() RETURNS trigger AS $$
-BEGIN
-    RAISE EXCEPTION 'wager transaction % is terminal and cannot change', OLD.id;
-END;
-$$ LANGUAGE plpgsql;
-
-CREATE TRIGGER wager_transactions_terminal_is_immutable
-    BEFORE UPDATE ON wager_transactions
-    FOR EACH ROW
-    WHEN (OLD.status IN ('PROCESSED', 'REJECTED', 'FAILED'))
-    EXECUTE FUNCTION wager_transactions_block_terminal_update();

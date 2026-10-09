@@ -69,14 +69,12 @@ func connect(t *testing.T) *stack {
 	s.tokens["provider-a"] = s.token(t, "provider-a", env["KEYCLOAK_PROVIDER_A_CLIENT_SECRET"])
 	s.tokens["provider-b"] = s.token(t, "provider-b", env["KEYCLOAK_PROVIDER_B_CLIENT_SECRET"])
 
-	broker, err := sqs.NewClient(sqs.Config{
+	broker := sqs.NewClient(sqs.Config{
 		Endpoint: brokerURL, Region: env["AWS_REGION"],
 		AccessKeyID: env["AWS_ACCESS_KEY_ID"], SecretAccessKey: env["AWS_SECRET_ACCESS_KEY"],
 	})
-	if err != nil {
-		t.Fatalf("broker client: %v", err)
-	}
 	s.broker = broker
+	var err error
 	if s.queues, err = sqs.FindQueues(context.Background(), broker); err != nil {
 		t.Fatalf("find queues: %v", err)
 	}

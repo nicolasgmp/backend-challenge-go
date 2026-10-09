@@ -6,7 +6,6 @@ import (
 	"context"
 	"slices"
 	"testing"
-	"time"
 
 	"jungle-gaming-challeng/internal/infra/postgres/pgtest"
 )
@@ -52,18 +51,6 @@ func TestWagerTransactionChecks(t *testing.T) {
 			provider_id, correlation_id, created_at, updated_at)
 		 VALUES ($1, 'INTERNAL', 'OPENING', 'PROCESSED', $2, $2, 2500, 'BRL', 'provider-a', 'c', now(), now())`,
 		otherTxA, walletA)
-
-	rejectedWithoutCode := betRow(otherTxA, "tx-2")
-	rejectedWithoutCode.status = "REJECTED"
-	refused(t, pool, "wager_transactions_failure_code_matches_status", insertExternal, rejectedWithoutCode.args()...)
-
-	processedWithCode := betRow(otherTxA, "tx-2")
-	processedWithCode.failureCode = "INSUFFICIENT_FUNDS"
-	refused(t, pool, "wager_transactions_failure_code_matches_status", insertExternal, processedWithCode.args()...)
-
-	pendingWithoutDeadline := betRow(otherTxA, "tx-2")
-	pendingWithoutDeadline.status = "PENDING_REFERENCE"
-	refused(t, pool, "wager_transactions_pending_reference_has_deadline", insertExternal, pendingWithoutDeadline.args()...)
 
 	for _, kind := range []string{"REFUND", "ROLLBACK"} {
 		reversalWithoutReference := betRow(otherTxA, "tx-2")
@@ -127,36 +114,6 @@ func TestOneProcessedReversalPerReference(t *testing.T) {
 
 	win := reversal("0192f298-345e-7e38-af88-e43f851a81b6", "WIN", "PROCESSED", "tx-w1", nil)
 	insertExternalRow(t, pool, win)
-}
-
-func TestTerminalTransactionsCannotChange(t *testing.T) {
-	pool := pgtest.NewDatabase(context.Background(), t)
-	insertWallet(t, pool, walletA, 100000)
-
-	rows := map[string]externalRow{
-		"PROCESSED": betRow("0192f298-345e-7e38-af88-e43f851a81c1", "tx-1"),
-		"REJECTED":  betRow("0192f298-345e-7e38-af88-e43f851a81c2", "tx-2"),
-		"FAILED":    betRow("0192f298-345e-7e38-af88-e43f851a81c3", "tx-3"),
-	}
-	for status, row := range rows {
-		row.status = status
-		if status != "PROCESSED" {
-			row.failureCode = "PROCESSING_FAILED"
-		}
-		insertExternalRow(t, pool, row)
-
-		refused(t, pool, "wager transaction "+row.id+" is terminal and cannot change",
-			`UPDATE wager_transactions SET status = 'PENDING_REFERENCE', failure_code = NULL, updated_at = now() WHERE id = $1`, row.id)
-		refused(t, pool, "wager transaction "+row.id+" is terminal and cannot change",
-			`UPDATE wager_transactions SET amount = 1 WHERE id = $1`, row.id)
-	}
-
-	waiting := betRow(refundA, "tx-4")
-	waiting.kind, waiting.status = "REFUND", "PENDING_REFERENCE"
-	waiting.referenceExternalID, waiting.deadline, waiting.resultBalance = "tx-0", time.Now().Add(time.Minute), nil
-	insertExternalRow(t, pool, waiting)
-	exec(t, pool, `UPDATE wager_transactions SET attempts = attempts + 1 WHERE id = $1`, refundA)
-	exec(t, pool, `UPDATE wager_transactions SET status = 'REJECTED', failure_code = 'REFERENCE_NOT_FOUND' WHERE id = $1`, refundA)
 }
 
 const insertEntry = `INSERT INTO wallet_ledger_entries

@@ -14,9 +14,8 @@ import (
 )
 
 const (
-	headerCorrelationID   = "X-Correlation-Id"
-	maxCorrelationIDBytes = 128
-	bearerPrefix          = "Bearer "
+	headerCorrelationID = "X-Correlation-Id"
+	bearerPrefix        = "Bearer "
 )
 
 type correlationKey struct{}
@@ -33,22 +32,10 @@ func callerFrom(ctx context.Context) app.Caller {
 	return caller
 }
 
-func validCorrelationID(id string) bool {
-	if id == "" || len(id) > maxCorrelationIDBytes {
-		return false
-	}
-	for _, r := range id {
-		if r <= ' ' || r > '~' {
-			return false
-		}
-	}
-	return true
-}
-
 func withCorrelation(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		id := r.Header.Get(headerCorrelationID)
-		if !validCorrelationID(id) {
+		if id == "" {
 			id = uuid.NewString()
 		}
 		w.Header().Set(headerCorrelationID, id)

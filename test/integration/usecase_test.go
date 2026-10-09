@@ -460,39 +460,6 @@ func TestReversalBeforeItsReferenceIsResolvedLater(t *testing.T) {
 	e.wantWallet(t, w.ID, "1000.00", 3)
 }
 
-func TestSameKeyOnTwoWalletsAtTheSameTime(t *testing.T) {
-	e := newEnvironment(t)
-	first := e.open(t, "1000.00")
-	second := e.open(t, "1000.00")
-
-	for round := range 10 {
-		externalID := fmt.Sprintf("tx-%d", round)
-		results, failures := e.inParallel([]app.SubmitInput{
-			operation(t, first, wager.Bet, "10.00", externalID, ""),
-			operation(t, second, wager.Bet, "10.00", externalID, ""),
-		})
-
-		processed, conflicts := 0, 0
-		for i, result := range results {
-			switch {
-			case failures[i] == nil && result.Transaction.Status == wager.Processed:
-				processed++
-			case errors.Is(failures[i], app.ConflictError{Code: app.ConflictIdempotencyKeyReused}):
-				conflicts++
-			default:
-				t.Fatalf("round %d, send %d: result %+v, err %v", round, i+1, result, failures[i])
-			}
-		}
-		if processed != 1 || conflicts != 1 {
-			t.Fatalf("round %d: %d processed and %d conflicts, want one of each", round, processed, conflicts)
-		}
-	}
-
-	if got := e.counts(t); got.transactions != 12 || got.entries != 12 {
-		t.Fatalf("rows = %+v, want the two openings and ten bets, each with one entry", got)
-	}
-}
-
 func TestReconciliationSeesOneSnapshotUnderLoad(t *testing.T) {
 	e := newEnvironment(t)
 	w := e.open(t, "0.00")

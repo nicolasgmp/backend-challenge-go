@@ -17,15 +17,12 @@ func main() {
 }
 
 func run() error {
-	client, err := sqs.NewClient(sqs.Config{
+	client := sqs.NewClient(sqs.Config{
 		Endpoint:        os.Getenv("SQS_ENDPOINT"),
 		Region:          os.Getenv("AWS_REGION"),
 		AccessKeyID:     os.Getenv("AWS_ACCESS_KEY_ID"),
 		SecretAccessKey: os.Getenv("AWS_SECRET_ACCESS_KEY"),
 	})
-	if err != nil {
-		return err
-	}
 	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 	defer cancel()
 

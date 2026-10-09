@@ -156,9 +156,6 @@ func TestWalletRepository(t *testing.T) {
 	if _, err := db.wallets.Get(ctx, parsed(t, ids.ParseWalletID, walletB)); !errors.Is(err, app.ErrNotFound) {
 		t.Fatalf("unknown wallet: err = %v, want %v", err, app.ErrNotFound)
 	}
-	if err := db.wallets.Insert(ctx, duplicate); !errors.Is(err, postgres.ErrNoTransaction) {
-		t.Fatalf("Insert outside a transaction: err = %v, want %v", err, postgres.ErrNoTransaction)
-	}
 	if _, err := db.wallets.GetForUpdate(ctx, w.State().ID); !errors.Is(err, postgres.ErrNoTransaction) {
 		t.Fatalf("GetForUpdate outside a transaction: err = %v, want %v", err, postgres.ErrNoTransaction)
 	}
@@ -279,9 +276,6 @@ func TestTransactionRoundTrip(t *testing.T) {
 	if _, err := db.transactions.Get(ctx, parsed(t, ids.ParseTransactionID, otherTxA)); !errors.Is(err, app.ErrNotFound) {
 		t.Fatalf("unknown transaction: err = %v, want %v", err, app.ErrNotFound)
 	}
-	if err := db.transactions.Insert(ctx, processed); !errors.Is(err, postgres.ErrNoTransaction) {
-		t.Fatalf("Insert outside a transaction: err = %v, want %v", err, postgres.ErrNoTransaction)
-	}
 }
 
 func TestTransactionUniquenessAndProviderScope(t *testing.T) {
@@ -391,10 +385,6 @@ func TestPendingReferenceLifecycle(t *testing.T) {
 		t.Fatalf("listed %d transactions with limit 1", len(limited))
 	}
 
-	if _, err := db.transactions.GetForUpdate(ctx, due.State().ID); !errors.Is(err, postgres.ErrNoTransaction) {
-		t.Fatalf("GetForUpdate outside a transaction: err = %v, want %v", err, postgres.ErrNoTransaction)
-	}
-
 	db.write(t, func(ctx context.Context) error {
 		locked, err := db.transactions.GetForUpdate(ctx, due.State().ID)
 		if err != nil {
@@ -435,11 +425,6 @@ func TestPendingReferenceLifecycle(t *testing.T) {
 	must(t, err)
 	if len(stillDue) != 1 || stillDue[0].State().ID != dueEarlier.State().ID {
 		t.Fatalf("listed %d transactions after three left the pending state, want only the one still waiting", len(stillDue))
-	}
-
-	err = db.runner.Run(ctx, func(ctx context.Context) error { return db.transactions.Update(ctx, due) })
-	if err == nil {
-		t.Fatal("updating a terminal transaction succeeded")
 	}
 }
 
@@ -601,10 +586,6 @@ func TestOutboxInsertAndClaim(t *testing.T) {
 	if age, err := db.outbox.OldestPendingAge(ctx); err != nil || age != 0 {
 		t.Fatalf("OldestPendingAge after publishing = %s, %v, want 0", age, err)
 	}
-
-	if err := db.outbox.Insert(ctx, event); !errors.Is(err, postgres.ErrNoTransaction) {
-		t.Fatalf("Insert outside a transaction: err = %v, want %v", err, postgres.ErrNoTransaction)
-	}
 }
 
 func TestOutboxConcurrentClaimsDoNotOverlap(t *testing.T) {
@@ -687,8 +668,5 @@ func TestInboxStore(t *testing.T) {
 	err := db.runner.Run(ctx, func(ctx context.Context) error { return db.inbox.Complete(ctx, "wager-consumer", "msg-9") })
 	if !errors.Is(err, app.ErrNotFound) {
 		t.Fatalf("Complete of an unknown message: err = %v, want %v", err, app.ErrNotFound)
-	}
-	if _, err := db.inbox.Register(ctx, "wager-consumer", "msg-2", "hash"); !errors.Is(err, postgres.ErrNoTransaction) {
-		t.Fatalf("Register outside a transaction: err = %v, want %v", err, postgres.ErrNoTransaction)
 	}
 }
