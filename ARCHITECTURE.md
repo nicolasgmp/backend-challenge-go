@@ -247,7 +247,7 @@ Erros (`400`, `401`, `403`, `404`, `409`, `503`) em `application/problem+json` (
 
 ## 12. Códigos de falha
 
-A divisão: o que se julga olhando só a requisição, mais a carteira que não existe, é **entrada inválida** (nada é gravado; pode ser corrigido e reenviado). O que depende do estado gravado é **rejeição** (transação `REJECTED`, definitiva).
+A divisão: o que se julga olhando só a requisição, mais a carteira ou a transação que não existe, é **entrada inválida** (nada é gravado; pode ser corrigido e reenviado). O que depende do estado gravado é **rejeição** (transação `REJECTED`, definitiva).
 
 | Entrada inválida | Situação |
 | --- | --- |

@@ -95,7 +95,7 @@ O realm é importado de [`deploy/keycloak/wallet-realm.json`](deploy/keycloak/wa
 
 ## Roteiro: da carteira ao ledger
 
-Os comandos deste roteiro usam sintaxe de `bash` ou `zsh`; em outro shell (por exemplo `fish`), rode `bash` antes. Carregue as variáveis e defina uma função que pede um token:
+Os comandos deste roteiro usam sintaxe de `bash`; em outro shell (por exemplo `zsh` ou `fish`), rode `bash` antes. Carregue as variáveis e defina uma função que pede um token:
 
 ```sh
 set -a; . ./.env; set +a
@@ -208,7 +208,7 @@ Notas:
 - Os testes de integração e os ponta a ponta ficam atrás das build tags `integration` e `e2e`. Sem elas, `go test ./...` não precisa de Docker.
 - `make integration` leva alguns minutos: o Keycloak demora cerca de 30 segundos para subir em cada pacote que o usa. Os pacotes rodam um por vez (`-p 1`), para não subir vários Keycloaks ao mesmo tempo; se a máquina tiver pouca memória, derrube a stack do Compose antes (`make down`).
 - `make e2e` deixa a stack de pé com o prazo de 20 s; para voltar ao padrão, rode `make up` de novo.
-- `make e2e` sobe a stack (`docker compose up --build --wait`) e roda `go test -tags=e2e ./test/e2e/...`. Ele usa as portas `5432`, `4566`, `8081` a `8083` e `8090`, e lê os segredos do `.env`.
+- `make e2e` sobe a stack (`docker compose up --build --wait`) e roda `go test -count=1 -timeout=20m -tags=e2e ./test/e2e/...`. Ele usa as portas `5432`, `4566`, `8081` a `8083` e `8090`, e lê os segredos do `.env`.
 
 ## Múltiplas instâncias e simulações de falha
 
