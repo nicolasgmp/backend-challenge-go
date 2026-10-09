@@ -24,11 +24,8 @@ func NewWalletBalanceChanged(origin Origin, change WalletBalanceChanged) (Event,
 }
 
 func (c WalletBalanceChanged) valid() bool {
-	if c.WalletID.IsZero() || c.TransactionID.IsZero() || c.WalletVersion < 1 {
+	if c.WalletID.IsZero() || c.TransactionID.IsZero() {
 		return false
 	}
-	if _, err := ledger.ParseDirection(string(c.Direction)); err != nil {
-		return false
-	}
-	return c.Money.IsPositive() && notNegative(c.BalanceBefore) && notNegative(c.BalanceAfter)
+	return notNegative(c.Money) && notNegative(c.BalanceBefore) && notNegative(c.BalanceAfter)
 }

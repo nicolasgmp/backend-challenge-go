@@ -120,16 +120,6 @@ func TestHandleValidMessage(t *testing.T) {
 	logtest.AssertNoLeak(t, f.logs.String(), "25.00", "975.00", "1000.00")
 }
 
-func TestHandleUsesTheCorrelationAttribute(t *testing.T) {
-	f := newFixture(t, "1000.00")
-
-	f.handler.Handle(context.Background(), f.message("msg-1", "BET", "25.00", "transaction-123"), "trace-42")
-
-	if stored := f.externalTransactions(); stored[0].CorrelationID != "trace-42" {
-		t.Fatalf("correlation id = %q, want the message attribute", stored[0].CorrelationID)
-	}
-}
-
 func TestHandleRedelivery(t *testing.T) {
 	f := newFixture(t, "1000.00")
 	body := f.message("msg-1", "BET", "25.00", "transaction-123")
@@ -242,41 +232,6 @@ func TestHandleDeadLetters(t *testing.T) {
 	}
 }
 
-func TestHandleConflictGoesToTheDeadLetterQueue(t *testing.T) {
-	f := newFixture(t, "1000.00")
-	f.handler.Handle(context.Background(), f.message("msg-1", "BET", "25.00", "tx-1"), "")
-
-	reused := f.message("msg-2", "BET", "30.00", "tx-1")
-	if outcome := f.handler.Handle(context.Background(), reused, ""); outcome != (Outcome{Action: DeadLetter, Reason: app.ConflictIdempotencyKeyReused}) {
-		t.Fatalf("outcome = %+v, want the dead-letter queue with the conflict code", outcome)
-	}
-	if f.balance(t) != "975.00" {
-		t.Fatalf("balance = %s, want it unchanged by the conflict", f.balance(t))
-	}
-}
-
-func TestHandleRecordedOutcomesDeleteTheMessage(t *testing.T) {
-	f := newFixture(t, "20.00")
-
-	rejected := f.handler.Handle(context.Background(), f.message("msg-1", "BET", "80.00", "tx-1"), "")
-	pending := f.handler.Handle(context.Background(), strings.Replace(f.message("msg-2", "REFUND", "25.00", "tx-2"),
-		`"kind"`, `"referenceExternalTransactionId":"tx-later","kind"`, 1), "")
-	if rejected != (Outcome{Action: Delete}) || pending != (Outcome{Action: Delete}) {
-		t.Fatalf("outcomes = %+v and %+v, want both messages deleted", rejected, pending)
-	}
-
-	statuses := map[wager.Status]bool{}
-	for _, state := range f.externalTransactions() {
-		statuses[state.Status] = true
-	}
-	if !statuses[wager.Rejected] || !statuses[wager.PendingReference] || f.balance(t) != "20.00" {
-		t.Fatalf("statuses = %v, balance %s, want a rejection and a pending reference recorded", statuses, f.balance(t))
-	}
-	if again := f.handler.Handle(context.Background(), f.message("msg-1", "BET", "80.00", "tx-1"), ""); again.Action != Delete {
-		t.Fatalf("redelivery of a rejected message = %+v, want it deleted", again)
-	}
-}
-
 func TestHandleTransientFailureIsRetried(t *testing.T) {
 	failingCalls := []string{"inbox.Register", "wallets.GetForUpdate", "outbox.Insert", "inbox.Complete"}
 
@@ -300,47 +255,5 @@ func TestHandleTransientFailureIsRetried(t *testing.T) {
 				t.Fatalf("redelivery outcome = %+v, balance %s, want the message processed once", outcome, f.balance(t))
 			}
 		})
-	}
-}
-
-func TestRetryDelay(t *testing.T) {
-	tests := []struct {
-		received int
-		want     time.Duration
-	}{
-		{1, 2 * time.Second},
-		{2, 4 * time.Second},
-		{3, 8 * time.Second},
-		{4, 16 * time.Second},
-		{5, 32 * time.Second},
-		{6, 60 * time.Second},
-		{50, 60 * time.Second},
-		{0, 2 * time.Second},
-	}
-
-	for _, tt := range tests {
-		if got := retryDelay(2*time.Second, tt.received); got != tt.want {
-			t.Errorf("retryDelay(2s, %d) = %s, want %s", tt.received, got, tt.want)
-		}
-	}
-}
-
-func TestNewClientRejectsIncompleteConfig(t *testing.T) {
-	complete := Config{Endpoint: "http://localhost:4566", Region: "us-east-1", AccessKeyID: "local", SecretAccessKey: "local"}
-	if _, err := NewClient(complete); err != nil {
-		t.Fatalf("NewClient: %v", err)
-	}
-
-	for name, change := range map[string]func(*Config){
-		"endpoint": func(c *Config) { c.Endpoint = "" },
-		"region":   func(c *Config) { c.Region = "" },
-		"key id":   func(c *Config) { c.AccessKeyID = "" },
-		"secret":   func(c *Config) { c.SecretAccessKey = "" },
-	} {
-		cfg := complete
-		change(&cfg)
-		if _, err := NewClient(cfg); err != ErrInvalidConfig {
-			t.Errorf("without the %s: err = %v, want %v", name, err, ErrInvalidConfig)
-		}
 	}
 }

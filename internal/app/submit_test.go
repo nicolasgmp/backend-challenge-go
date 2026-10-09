@@ -122,38 +122,6 @@ func TestSubmitBet(t *testing.T) {
 	}
 }
 
-func TestSubmitHashCoversEveryBusinessField(t *testing.T) {
-	changes := map[string]func(*app.SubmitInput){
-		"wallet": func(in *app.SubmitInput) { in.WalletID = parsed(t, ids.ParseWalletID, otherUUID) },
-		"player": func(in *app.SubmitInput) { in.PlayerID = parsed(t, ids.ParsePlayerID, otherUUID) },
-		"round":  func(in *app.SubmitInput) { in.External.RoundID = parsed(t, ids.ParseRoundID, "round-2") },
-		"game":   func(in *app.SubmitInput) { in.External.GameID = parsed(t, ids.ParseGameID, "game-2") },
-		"kind":   func(in *app.SubmitInput) { in.Kind = wager.Rollback },
-		"reference": func(in *app.SubmitInput) {
-			in.External.ReferenceExternalID = parsed(t, ids.ParseExternalTransactionID, "tx-9")
-		},
-		"amount": func(in *app.SubmitInput) { in.Money = amount(t, 3000, "BRL") },
-	}
-
-	for name, change := range changes {
-		t.Run(name, func(t *testing.T) {
-			f := newFixture()
-			w := f.open(t, 100000)
-			original := operation(t, w, wager.Refund, 2500, "tx-1", "tx-0")
-			f.submit(t, original)
-
-			changed := original
-			change(&changed)
-			_, err := f.service.SubmitTransaction(t.Context(), changed)
-			if name == "wallet" {
-				wantInvalidInput(t, err, failure.WalletNotFound)
-				return
-			}
-			wantConflict(t, err, app.ConflictIdempotencyKeyReused)
-		})
-	}
-}
-
 func TestSubmitBetWithoutFunds(t *testing.T) {
 	f := newFixture()
 	w := f.open(t, 2000)

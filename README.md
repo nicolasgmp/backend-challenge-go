@@ -175,7 +175,7 @@ curl -s http://localhost:8081/health/ready
 curl -s http://localhost:8081/metrics | grep wager_transactions_total
 ```
 
-Os códigos de status e os corpos de erro estão na seção 12 do `ARCHITECTURE.md`.
+Os códigos de status e os corpos de erro estão na seção 11 do `ARCHITECTURE.md`.
 
 ## Enviar uma operação pela fila
 
@@ -200,14 +200,14 @@ Para ver o resultado: consulte a transação por `transaction-200`, como no pass
 | unitário com detector de corrida | `go test -race ./...` ou `make race` | não | nada |
 | análise estática | `go vet ./...` | não | |
 | formatação | `gofmt -l .` (não deve listar nada) | não | |
-| integração | `make integration` (`go test -race -tags=integration ./...`) | sim | cada pacote sobe os próprios containers de PostgreSQL, Keycloak e MiniStack com `testcontainers-go` |
+| integração | `make integration` (`go test -race -p 1 -tags=integration ./...`) | sim | cada pacote sobe os próprios containers de PostgreSQL, Keycloak e MiniStack com `testcontainers-go` |
 | ponta a ponta, três instâncias | `make e2e` | sim | a stack do Compose, com o prazo de referência pendente reduzido para 20 s |
 | dinheiro sem ponto flutuante | `make nofloat` | não | procura `float32`, `float64`, `ParseFloat` e `big.Float` no domínio e na aplicação |
 
 Notas:
 
 - Os testes de integração e os ponta a ponta ficam atrás das build tags `integration` e `e2e`. Sem elas, `go test ./...` não precisa de Docker.
-- `make integration` leva alguns minutos: o Keycloak demora cerca de 30 segundos para subir em cada pacote que o usa.
+- `make integration` leva alguns minutos: o Keycloak demora cerca de 30 segundos para subir em cada pacote que o usa. Os pacotes rodam um por vez (`-p 1`), para não subir vários Keycloaks ao mesmo tempo; se a máquina tiver pouca memória, derrube a stack do Compose antes (`make down`).
 - `make e2e` deixa a stack de pé com o prazo de 20 s; para voltar ao padrão, rode `make up` de novo.
 - `make e2e` sobe a stack (`docker compose up --build --wait`) e roda `go test -tags=e2e ./test/e2e/...`. Ele usa as portas `5432`, `4566`, `8081` a `8083` e `8090`, e lê os segredos do `.env`.
 

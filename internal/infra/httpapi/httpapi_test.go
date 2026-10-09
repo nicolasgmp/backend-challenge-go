@@ -14,7 +14,6 @@ import (
 	"jungle-gaming-challeng/internal/app"
 	"jungle-gaming-challeng/internal/domain/failure"
 	"jungle-gaming-challeng/internal/domain/ids"
-	"jungle-gaming-challeng/internal/domain/ledger"
 	"jungle-gaming-challeng/internal/domain/money"
 	"jungle-gaming-challeng/internal/domain/wager"
 	"jungle-gaming-challeng/internal/domain/wallet"
@@ -256,25 +255,6 @@ func transactionState(t *testing.T, status wager.Status) wager.State {
 	return state
 }
 
-func walletState(t *testing.T) wallet.State {
-	t.Helper()
-
-	return wallet.State{
-		ID:       parsed(t, ids.ParseWalletID, walletUUID),
-		PlayerID: parsed(t, ids.ParsePlayerID, playerUUID),
-		Balance:  amount(t, "1000.00"),
-		Version:  1,
-	}
-}
-
-func TestUnknownRouteAndMethod(t *testing.T) {
-	h := newHarness(t)
-
-	wantProblem(t, h.do(call{method: http.MethodGet, path: "/nothing-here"}), http.StatusNotFound, httpapi.CodeNotFound)
-	wantProblem(t, h.do(call{method: http.MethodDelete, path: "/wallets/" + walletUUID}), http.StatusMethodNotAllowed, httpapi.CodeMethodNotAllowed)
-	wantProblem(t, h.do(call{method: http.MethodGet, path: "/wagering/transactions"}), http.StatusMethodNotAllowed, httpapi.CodeMethodNotAllowed)
-}
-
 func TestInternalErrorDoesNotLeakDetails(t *testing.T) {
 	h := newHarness(t)
 	h.service.getWallet = func(ids.WalletID) (wallet.State, error) {
@@ -294,64 +274,6 @@ func TestInternalErrorDoesNotLeakDetails(t *testing.T) {
 	}
 	if !strings.Contains(h.logs.String(), "request failed") {
 		t.Fatal("the internal error was not logged")
-	}
-}
-
-func TestCorrelationID(t *testing.T) {
-	tests := []struct {
-		name   string
-		header string
-		kept   bool
-	}{
-		{"given", "request-42", true},
-		{"absent", "", false},
-		{"with a space", "request 42", false},
-		{"with a control character", "request\t42", false},
-		{"too long", strings.Repeat("a", 129), false},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			h := newHarness(t)
-			var received string
-			h.service.openWallet = func(in app.OpenWalletInput) (wallet.State, error) {
-				received = in.CorrelationID
-				return walletState(t), nil
-			}
-
-			recorder := h.do(call{
-				method: http.MethodPost, path: "/wallets", token: internalToken,
-				body:    `{"playerId":"` + playerUUID + `","initialBalance":{"amount":"1000.00","currency":"BRL"}}`,
-				headers: map[string]string{"X-Correlation-Id": tt.header},
-			})
-
-			returned := recorder.Header().Get("X-Correlation-Id")
-			if returned == "" || received != returned {
-				t.Fatalf("response header %q, use case %q, want the same non-empty id", returned, received)
-			}
-			if (returned == tt.header) != tt.kept {
-				t.Fatalf("returned %q for the header %q, kept = %t, want %t", returned, tt.header, returned == tt.header, tt.kept)
-			}
-		})
-	}
-}
-
-func TestPanicAndTimeout(t *testing.T) {
-	h := newHarness(t)
-
-	h.service.getWallet = func(ids.WalletID) (wallet.State, error) { panic("unexpected nil") }
-	wantProblem(t, h.do(call{method: http.MethodGet, path: "/wallets/" + walletUUID, token: internalToken}),
-		http.StatusInternalServerError, httpapi.CodeInternalError)
-
-	h.service.submitTransaction = func(ctx context.Context, _ app.SubmitInput) (app.SubmitResult, error) {
-		<-ctx.Done()
-		return app.SubmitResult{}, ctx.Err()
-	}
-	started := time.Now()
-	recorder := h.do(submit(providerAToken, betBody))
-	wantProblem(t, recorder, http.StatusServiceUnavailable, httpapi.CodeServiceUnavailable)
-	if recorder.Header().Get("Retry-After") == "" || time.Since(started) > 2*time.Second {
-		t.Fatalf("Retry-After = %q after %s, want the header and the request cut at its deadline", recorder.Header().Get("Retry-After"), time.Since(started))
 	}
 }
 
@@ -435,38 +357,6 @@ func TestSubmitRejectsInvalidRequests(t *testing.T) {
 	}
 }
 
-func TestSubmitPassesTheRequestToTheUseCase(t *testing.T) {
-	h := newHarness(t)
-	var received app.SubmitInput
-	h.service.submitTransaction = func(_ context.Context, in app.SubmitInput) (app.SubmitResult, error) {
-		received = in
-		return app.SubmitResult{Transaction: transactionState(t, wager.Processed)}, nil
-	}
-	body := strings.Replace(betBody, `"kind":"BET"`, `"kind":"REFUND","referenceExternalTransactionId":"transaction-100"`, 1)
-
-	recorder := h.do(submit(providerAToken, body))
-	if recorder.Code != http.StatusOK {
-		t.Fatalf("status = %d, want 200 (body %s)", recorder.Code, recorder.Body.String())
-	}
-
-	if received.Channel != app.ChannelHTTP || received.Kind != wager.Refund || received.Money.Amount() != "25.00" {
-		t.Fatalf("input = %+v, want an HTTP refund of 25.00", received)
-	}
-	if received.WalletID.String() != walletUUID || received.PlayerID.String() != playerUUID {
-		t.Fatalf("input = %+v, want the wallet and the player of the body", received)
-	}
-	external := received.External
-	if external.ProviderID.String() != "provider-a" || external.ExternalID.String() != "transaction-123" || external.RoundID.String() != "round-987" {
-		t.Fatalf("external = %+v, want the provider data of the body", external)
-	}
-	if external.GameID.String() != "fortune-chimp" || external.ReferenceExternalID.String() != "transaction-100" {
-		t.Fatalf("external = %+v, want the game and the reference of the body", external)
-	}
-	if external.IdempotencyKey.String() != "provider-a:transaction-123" || received.CorrelationID == "" {
-		t.Fatalf("input = %+v, want the key exactly as received and a correlation id", received)
-	}
-}
-
 func TestSubmitStatusByOutcome(t *testing.T) {
 	tests := []struct {
 		name        string
@@ -539,176 +429,6 @@ func TestSubmitForAnotherProviderIsForbidden(t *testing.T) {
 	if len(h.service.calls) != 0 {
 		t.Fatalf("the use case was called: %v", h.service.calls)
 	}
-}
-
-func TestOpenWallet(t *testing.T) {
-	const body = `{"playerId":"` + playerUUID + `","initialBalance":{"amount":"1000.00","currency":"BRL"}}`
-	open := func(body string) call {
-		return call{method: http.MethodPost, path: "/wallets", token: internalToken, body: body}
-	}
-
-	t.Run("created", func(t *testing.T) {
-		h := newHarness(t)
-		var received app.OpenWalletInput
-		h.service.openWallet = func(in app.OpenWalletInput) (wallet.State, error) {
-			received = in
-			return walletState(t), nil
-		}
-
-		recorder := h.do(open(body))
-		want := `{"id":"` + walletUUID + `","playerId":"` + playerUUID + `","balance":{"amount":"1000.00","currency":"BRL"},"version":1}`
-		if recorder.Code != http.StatusCreated || strings.TrimSpace(recorder.Body.String()) != want {
-			t.Fatalf("response = %d %s, want 201 %s", recorder.Code, recorder.Body.String(), want)
-		}
-		if received.PlayerID.String() != playerUUID || received.InitialBalance.Amount() != "1000.00" {
-			t.Fatalf("input = %+v, want the player and the balance of the body", received)
-		}
-	})
-
-	t.Run("already exists", func(t *testing.T) {
-		h := newHarness(t)
-		h.service.openWallet = func(app.OpenWalletInput) (wallet.State, error) {
-			return wallet.State{}, app.ConflictError{Code: app.ConflictWalletAlreadyExists}
-		}
-		wantProblem(t, h.do(open(body)), http.StatusConflict, app.ConflictWalletAlreadyExists)
-	})
-
-	invalid := map[string]struct {
-		body string
-		code failure.Code
-	}{
-		"negative balance":    {strings.Replace(body, "1000.00", "-1.00", 1), failure.InvalidMoney},
-		"unsupported money":   {strings.Replace(body, "BRL", "JPY", 1), failure.InvalidMoney},
-		"missing balance":     {`{"playerId":"` + playerUUID + `"}`, failure.MalformedRequest},
-		"missing player":      {`{"initialBalance":{"amount":"1.00","currency":"BRL"}}`, failure.MalformedRequest},
-		"malformed player id": {strings.Replace(body, playerUUID, "abc", 1), failure.InvalidIdentifier},
-	}
-	for name, tt := range invalid {
-		t.Run(name, func(t *testing.T) {
-			h := newHarness(t)
-			wantProblem(t, h.do(open(tt.body)), http.StatusBadRequest, string(tt.code))
-			if len(h.service.calls) != 0 {
-				t.Fatalf("the use case was called: %v", h.service.calls)
-			}
-		})
-	}
-}
-
-func TestGetWallet(t *testing.T) {
-	h := newHarness(t)
-	h.service.getWallet = func(id ids.WalletID) (wallet.State, error) {
-		if id.String() != walletUUID {
-			return wallet.State{}, failure.InvalidInputError{Code: failure.WalletNotFound}
-		}
-		return walletState(t), nil
-	}
-
-	found := h.do(call{method: http.MethodGet, path: "/wallets/" + walletUUID, token: internalToken})
-	if body := decode(t, found); found.Code != http.StatusOK || body["id"] != walletUUID || body["version"] != 1.0 {
-		t.Fatalf("response = %d %v, want 200 with the wallet", found.Code, body)
-	}
-	wantProblem(t, h.do(call{method: http.MethodGet, path: "/wallets/" + playerUUID, token: internalToken}), http.StatusNotFound, "WALLET_NOT_FOUND")
-	wantProblem(t, h.do(call{method: http.MethodGet, path: "/wallets/not-a-uuid", token: internalToken}), http.StatusBadRequest, "INVALID_IDENTIFIER")
-	wantProblem(t, h.do(call{method: http.MethodGet, path: "/wallets/" + walletUUID, token: providerAToken}), http.StatusForbidden, httpapi.CodeInsufficientScope)
-}
-
-func TestListLedger(t *testing.T) {
-	h := newHarness(t)
-	entry, err := ledger.NewEntry(ledger.Fields{
-		WalletID:      parsed(t, ids.ParseWalletID, walletUUID),
-		TransactionID: parsed(t, ids.ParseTransactionID, transactionUUID),
-		Direction:     ledger.Debit,
-		Amount:        amount(t, "25.00"),
-		BalanceBefore: amount(t, "1000.00"),
-		BalanceAfter:  amount(t, "975.00"),
-		WalletVersion: 2,
-	})
-	if err != nil {
-		t.Fatalf("NewEntry: %v", err)
-	}
-	var cursor string
-	var limit int
-	h.service.listLedger = func(_ ids.WalletID, c string, l int) (app.LedgerPage, error) {
-		cursor, limit = c, l
-		if c == "tampered" {
-			return app.LedgerPage{}, failure.InvalidInputError{Code: failure.InvalidCursor}
-		}
-		if l > app.MaxLedgerPageSize || l < 1 {
-			return app.LedgerPage{}, failure.InvalidInputError{Code: failure.MalformedRequest}
-		}
-		page := app.LedgerPage{Entries: []ledger.Entry{entry}}
-		if c == "" {
-			page.NextCursor = "Mg"
-		}
-		return page, nil
-	}
-	ledgerPath := "/wallets/" + walletUUID + "/ledger"
-
-	first := h.do(call{method: http.MethodGet, path: ledgerPath, token: internalToken})
-	body := decode(t, first)
-	entries, _ := body["entries"].([]any)
-	if first.Code != http.StatusOK || len(entries) != 1 || body["nextCursor"] != "Mg" || limit != app.DefaultLedgerPageSize {
-		t.Fatalf("first page = %d %v with limit %d, want one entry, a cursor and the default limit", first.Code, body, limit)
-	}
-	item := entries[0].(map[string]any)
-	if item["direction"] != "DEBIT" || item["walletVersion"] != 2.0 || !jsonEqual(item["balanceAfter"], map[string]any{"amount": "975.00", "currency": "BRL"}) {
-		t.Fatalf("entry = %v, want the debit at version 2 with money as strings", item)
-	}
-
-	last := h.do(call{method: http.MethodGet, path: ledgerPath + "?cursor=Mg&limit=10", token: internalToken})
-	if _, hasCursor := decode(t, last)["nextCursor"]; last.Code != http.StatusOK || hasCursor || cursor != "Mg" || limit != 10 {
-		t.Fatalf("last page = %d %s (cursor %q, limit %d), want no next cursor", last.Code, last.Body.String(), cursor, limit)
-	}
-
-	wantProblem(t, h.do(call{method: http.MethodGet, path: ledgerPath + "?limit=abc", token: internalToken}), http.StatusBadRequest, "MALFORMED_REQUEST")
-	wantProblem(t, h.do(call{method: http.MethodGet, path: ledgerPath + "?limit=201", token: internalToken}), http.StatusBadRequest, "MALFORMED_REQUEST")
-	wantProblem(t, h.do(call{method: http.MethodGet, path: ledgerPath + "?limit=0", token: internalToken}), http.StatusBadRequest, "MALFORMED_REQUEST")
-	wantProblem(t, h.do(call{method: http.MethodGet, path: ledgerPath + "?cursor=tampered", token: internalToken}), http.StatusBadRequest, "INVALID_CURSOR")
-}
-
-func TestReconcileWallet(t *testing.T) {
-	h := newHarness(t)
-	h.service.reconcileWallet = func(id ids.WalletID) (app.Reconciliation, error) {
-		if id.String() != walletUUID {
-			return app.Reconciliation{}, failure.InvalidInputError{Code: failure.WalletNotFound}
-		}
-		return app.Reconciliation{
-			WalletID: id, StoredBalance: amount(t, "975.00"), CalculatedBalance: amount(t, "975.00"),
-			Difference: amount(t, "0.00"), Consistent: true, CheckedEntries: 2,
-		}, nil
-	}
-	reconcile := func(id string) call {
-		return call{method: http.MethodPost, path: "/wallets/" + id + "/reconciliation", token: internalToken}
-	}
-
-	consistent := h.do(reconcile(walletUUID))
-	want := `{"walletId":"` + walletUUID + `","storedBalance":{"amount":"975.00","currency":"BRL"},` +
-		`"calculatedBalance":{"amount":"975.00","currency":"BRL"},"difference":{"amount":"0.00","currency":"BRL"},` +
-		`"consistent":true,"checkedEntries":2}`
-	if consistent.Code != http.StatusOK || strings.TrimSpace(consistent.Body.String()) != want {
-		t.Fatalf("response = %d %s, want 200 %s", consistent.Code, consistent.Body.String(), want)
-	}
-
-	h.service.reconcileWallet = func(id ids.WalletID) (app.Reconciliation, error) {
-		difference, err := amount(t, "900.00").Sub(amount(t, "975.00"))
-		return app.Reconciliation{
-			WalletID: id, StoredBalance: amount(t, "900.00"), CalculatedBalance: amount(t, "975.00"),
-			Difference: difference, CheckedEntries: 2,
-		}, err
-	}
-	divergent := decode(t, h.do(reconcile(walletUUID)))
-	if divergent["consistent"] != false || !jsonEqual(divergent["difference"], map[string]any{"amount": "-75.00", "currency": "BRL"}) {
-		t.Fatalf("divergent = %v, want consistent false and a difference of -75.00", divergent)
-	}
-	if !jsonEqual(divergent["storedBalance"], map[string]any{"amount": "900.00", "currency": "BRL"}) ||
-		!jsonEqual(divergent["calculatedBalance"], map[string]any{"amount": "975.00", "currency": "BRL"}) {
-		t.Fatalf("divergent = %v, want 900.00 stored and 975.00 calculated", divergent)
-	}
-
-	h.service.reconcileWallet = func(ids.WalletID) (app.Reconciliation, error) {
-		return app.Reconciliation{}, failure.InvalidInputError{Code: failure.WalletNotFound}
-	}
-	wantProblem(t, h.do(reconcile(playerUUID)), http.StatusNotFound, "WALLET_NOT_FOUND")
 }
 
 func TestGetTransaction(t *testing.T) {

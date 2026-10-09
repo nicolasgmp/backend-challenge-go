@@ -80,7 +80,7 @@ func Options(lookup func(string) string, logOutput io.Writer) fx.Option {
 		),
 		fx.Module("http",
 			fx.Provide(newHTTPServer),
-			fx.Invoke(RunHTTPServer),
+			fx.Invoke(runHTTPServer),
 		),
 		fx.Invoke(announceShutdown),
 	)
@@ -275,7 +275,7 @@ func newHTTPServer(p httpParams) *http.Server {
 	return &http.Server{Addr: p.Config.HTTPAddr, Handler: api.Handler(), ReadHeaderTimeout: readHeaderTimeout}
 }
 
-func RunHTTPServer(lc fx.Lifecycle, server *http.Server, logger *slog.Logger) {
+func runHTTPServer(lc fx.Lifecycle, server *http.Server, logger *slog.Logger) {
 	lc.Append(fx.Hook{
 		OnStart: func(ctx context.Context) error {
 			var listenConfig net.ListenConfig

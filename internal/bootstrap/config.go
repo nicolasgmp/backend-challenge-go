@@ -48,14 +48,6 @@ type Config struct {
 	LogLevel            slog.Level
 }
 
-func Variables() []string {
-	return []string{
-		EnvDatabaseURL, EnvDBMaxConns, EnvDBLockTimeout, EnvHTTPAddr, EnvHTTPRequestTimeout,
-		EnvOIDCIssuerURL, EnvOIDCKeysURL, EnvOIDCAudience, EnvSQSEndpoint, EnvAWSRegion,
-		EnvAWSAccessKeyID, EnvAWSSecretAccessKey, EnvPendingReferenceTTL, EnvShutdownTimeout, EnvLogLevel,
-	}
-}
-
 type reader struct {
 	lookup func(string) string
 	err    error

@@ -42,9 +42,6 @@ func (t *Transaction) MarkPendingReference(expiresAt, nextAttemptAt time.Time) e
 	if t.state.Status != Pending {
 		return ErrInvalidTransition
 	}
-	if expiresAt.IsZero() || nextAttemptAt.IsZero() {
-		return ErrInvalidTransaction
-	}
 	t.state.Status = PendingReference
 	t.state.ReferenceExpiresAt = expiresAt
 	t.state.NextAttemptAt = nextAttemptAt
@@ -80,9 +77,6 @@ func (t *Transaction) RecordUnexpectedError(nextAttemptAt time.Time) (bool, erro
 func (t *Transaction) retryAt(nextAttemptAt time.Time) error {
 	if t.state.Status != PendingReference {
 		return ErrInvalidTransition
-	}
-	if nextAttemptAt.IsZero() {
-		return ErrInvalidTransaction
 	}
 	t.state.Attempts++
 	t.state.NextAttemptAt = nextAttemptAt

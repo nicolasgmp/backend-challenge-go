@@ -1,7 +1,5 @@
 package failure
 
-import "errors"
-
 type Code string
 
 const (
@@ -30,23 +28,6 @@ const (
 
 	ProcessingFailed Code = "PROCESSING_FAILED"
 )
-
-var ErrUnknownCode = errors.New("failure: unknown code")
-
-func ParseCode(s string) (Code, error) {
-	switch code := Code(s); code {
-	case MalformedRequest, InvalidIdentifier, InvalidMoney, MissingIdempotencyKey,
-		UnsupportedKind, InvalidAmountForKind, MissingReference, UnexpectedReference,
-		InvalidCursor, WalletNotFound, TransactionNotFound,
-		InsufficientFunds, ReversalInsufficientFunds, BalanceOverflow,
-		PlayerWalletMismatch, CurrencyMismatch, ReferenceNotFound, ReferenceNotProcessed,
-		ReferenceMismatch, ReferenceKindNotAllowed, ReferenceAlreadyReversed,
-		ProcessingFailed:
-		return code, nil
-	default:
-		return "", ErrUnknownCode
-	}
-}
 
 func (c Code) IsRejection() bool {
 	switch c {

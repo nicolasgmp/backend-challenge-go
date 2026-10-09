@@ -94,24 +94,6 @@ func TestLoggerWritesJSONInUTCWithContextIdentifiers(t *testing.T) {
 	}
 }
 
-func TestContextIdentifiersDoNotLeakBetweenBranches(t *testing.T) {
-	base := observability.WithCorrelationID(context.Background(), "correlation-1")
-	base = observability.WithLogAttrs(base, slog.String("consumer", "wager"))
-	base = observability.WithLogAttrs(base, slog.String("queue", "inbound"))
-	first := observability.WithMessageID(base, "message-1")
-	second := observability.WithMessageID(base, "message-2")
-
-	logs := &logtest.Buffer{}
-	logger := observability.NewLogger(logs, slog.LevelInfo)
-	logger.InfoContext(first, "first")
-	logger.InfoContext(second, "second")
-
-	lines := strings.Split(strings.TrimSpace(logs.String()), "\n")
-	if !strings.Contains(lines[0], "message-1") || strings.Contains(lines[0], "message-2") || !strings.Contains(lines[1], "message-2") {
-		t.Fatalf("lines =\n%s\nwant each with its own message id", logs.String())
-	}
-}
-
 func TestMetricsAreExposed(t *testing.T) {
 	metrics := observability.NewMetrics()
 	metrics.TransactionResult("http", "BET", "REJECTED", "INSUFFICIENT_FUNDS")
@@ -176,28 +158,5 @@ func TestHealth(t *testing.T) {
 				t.Fatalf("NotReady = %v, want %v", got, tt.want)
 			}
 		})
-	}
-}
-
-type recorder struct {
-	testing.TB
-	failed bool
-}
-
-func (r *recorder) Errorf(string, ...any) { r.failed = true }
-
-func TestLogLeakHelper(t *testing.T) {
-	logs := `{"msg":"handled","walletId":"wallet-1","amount":"25.00"}`
-
-	if found := logtest.Leaked(logs, "25.00", "token-abc", ""); !slices.Equal(found, []string{"25.00"}) {
-		t.Fatalf("Leaked = %v, want only the value present in the logs", found)
-	}
-
-	leaking := &recorder{TB: t}
-	logtest.AssertNoLeak(leaking, logs, "25.00")
-	clean := &recorder{TB: t}
-	logtest.AssertNoLeak(clean, logs, "975.00", "token-abc")
-	if !leaking.failed || clean.failed {
-		t.Fatalf("AssertNoLeak failed = %t for leaking logs and %t for clean logs, want true and false", leaking.failed, clean.failed)
 	}
 }

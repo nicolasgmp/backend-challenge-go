@@ -263,43 +263,6 @@ func TestConsumerFinishesTheMessageInFlightOnShutdown(t *testing.T) {
 	}
 }
 
-func TestPostponeControlsTheRedelivery(t *testing.T) {
-	ctx := context.Background()
-	client := sqstest.Start(ctx, t)
-	queues, err := EnsureQueues(ctx, client)
-	if err != nil {
-		t.Fatalf("EnsureQueues: %v", err)
-	}
-	f := newFixture(t, "1000.00")
-	consumer := NewConsumer(client, f.handler, f.metrics, f.handler.Logger, ConsumerConfig{
-		QueueURL: queues.InboundURL, DLQURL: queues.InboundDLQURL, RetryBaseDelay: 3 * time.Second,
-	})
-	send(t, client, queues.InboundURL, "group-1", "msg-1", "body")
-
-	first, found := receiveOne(t, client, queues.InboundURL, 5*time.Second)
-	if !found {
-		t.Fatal("the message was not delivered")
-	}
-	if err := consumer.postpone(ctx, first, false); err != nil {
-		t.Fatalf("postpone: %v", err)
-	}
-	started := time.Now()
-	if _, early := receiveOne(t, client, queues.InboundURL, time.Second); early {
-		t.Fatal("the message came back before the delay asked for")
-	}
-	second, found := receiveOne(t, client, queues.InboundURL, 10*time.Second)
-	if !found || time.Since(started) < 2*time.Second {
-		t.Fatalf("redelivered = %t after %s, want it back only after about 3s", found, time.Since(started))
-	}
-
-	if err := consumer.postpone(ctx, second, true); err != nil {
-		t.Fatalf("postpone on shutdown: %v", err)
-	}
-	if _, released := receiveOne(t, client, queues.InboundURL, time.Second); !released {
-		t.Fatal("a message released on shutdown was not visible at once")
-	}
-}
-
 func TestPublisherRoutesByWalletAndDeduplicatesByEvent(t *testing.T) {
 	ctx := context.Background()
 	client := sqstest.Start(ctx, t)

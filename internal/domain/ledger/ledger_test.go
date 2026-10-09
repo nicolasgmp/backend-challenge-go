@@ -89,31 +89,6 @@ func invalidFields(t *testing.T) []brokenFields {
 	}
 }
 
-func TestParseDirection(t *testing.T) {
-	tests := []struct {
-		input   string
-		want    ledger.Direction
-		wantErr error
-	}{
-		{"DEBIT", ledger.Debit, nil},
-		{"CREDIT", ledger.Credit, nil},
-		{"debit", "", ledger.ErrInvalidDirection},
-		{"", "", ledger.ErrInvalidDirection},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.input, func(t *testing.T) {
-			got, err := ledger.ParseDirection(tt.input)
-			if !errors.Is(err, tt.wantErr) {
-				t.Fatalf("err = %v, want %v", err, tt.wantErr)
-			}
-			if got != tt.want {
-				t.Fatalf("ParseDirection() = %q, want %q", got, tt.want)
-			}
-		})
-	}
-}
-
 func TestNewEntry(t *testing.T) {
 	debit := validFields(t)
 

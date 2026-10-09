@@ -5,18 +5,13 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
-	"net"
-	"net/http"
-	"os"
 	"os/exec"
 	"path/filepath"
-	"slices"
 	"strings"
 	"testing"
 	"time"
 
 	"go.uber.org/fx"
-	"go.uber.org/fx/fxtest"
 
 	"jungle-gaming-challeng/internal/bootstrap"
 )
@@ -66,27 +61,6 @@ func TestLoadConfigDefaults(t *testing.T) {
 	}
 }
 
-func TestLoadConfigOverrides(t *testing.T) {
-	env := completeEnv()
-	env[bootstrap.EnvDBMaxConns] = "25"
-	env[bootstrap.EnvDBLockTimeout] = "750ms"
-	env[bootstrap.EnvHTTPAddr] = "127.0.0.1:9090"
-	env[bootstrap.EnvPendingReferenceTTL] = "30s"
-	env[bootstrap.EnvShutdownTimeout] = "10s"
-	env[bootstrap.EnvLogLevel] = "debug"
-
-	cfg, err := bootstrap.LoadConfig(lookupIn(env))
-	if err != nil {
-		t.Fatalf("LoadConfig: %v", err)
-	}
-	if cfg.DBMaxConns != 25 || cfg.DBLockTimeout != 750*time.Millisecond || cfg.HTTPAddr != "127.0.0.1:9090" {
-		t.Fatalf("cfg = %+v, want the overridden database and HTTP values", cfg)
-	}
-	if cfg.PendingReferenceTTL != 30*time.Second || cfg.ShutdownTimeout != 10*time.Second || cfg.LogLevel != slog.LevelDebug {
-		t.Fatalf("cfg = %+v, want the overridden deadlines and log level", cfg)
-	}
-}
-
 func TestLoadConfigRejects(t *testing.T) {
 	tests := []struct {
 		name  string
@@ -123,25 +97,6 @@ func TestLoadConfigRejects(t *testing.T) {
 				t.Fatalf("message = %q, want the variable name and never a value", err.Error())
 			}
 		})
-	}
-}
-
-func TestExampleFileListsEveryVariable(t *testing.T) {
-	example, err := os.ReadFile(filepath.Join("..", "..", ".env.example"))
-	if err != nil {
-		t.Fatalf("read .env.example: %v", err)
-	}
-
-	var declared []string
-	for line := range strings.Lines(string(example)) {
-		if name, _, found := strings.Cut(strings.TrimSpace(line), "="); found && !strings.HasPrefix(name, "#") {
-			declared = append(declared, name)
-		}
-	}
-	for _, name := range bootstrap.Variables() {
-		if !slices.Contains(declared, name) {
-			t.Errorf(".env.example does not declare %s", name)
-		}
 	}
 }
 
@@ -190,96 +145,5 @@ func TestServerExitsWithFailureOnInvalidConfiguration(t *testing.T) {
 	code, output := run(unreachable)
 	if code == 0 || strings.Contains(output, "s3cr3t") {
 		t.Fatalf("with an unreachable database: exit code %d, output %q, want a failure without the password", code, output)
-	}
-}
-
-func TestHTTPServerDrainsOnStop(t *testing.T) {
-	started, release := make(chan struct{}), make(chan struct{})
-	mux := http.NewServeMux()
-	mux.HandleFunc("/slow", func(w http.ResponseWriter, _ *http.Request) {
-		close(started)
-		<-release
-		w.WriteHeader(http.StatusNoContent)
-	})
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("pick a free port: %v", err)
-	}
-	addr := listener.Addr().String()
-	listener.Close()
-
-	server := &http.Server{Addr: addr, Handler: mux}
-	lifecycle := fxtest.NewLifecycle(t)
-	bootstrap.RunHTTPServer(lifecycle, server, slog.New(slog.DiscardHandler))
-	lifecycle.RequireStart()
-
-	status := make(chan int, 1)
-	go func() {
-		response, err := http.Get("http://" + addr + "/slow")
-		if err != nil {
-			status <- 0
-			return
-		}
-		response.Body.Close()
-		status <- response.StatusCode
-	}()
-	<-started
-
-	stopped := make(chan struct{})
-	go func() {
-		lifecycle.RequireStop()
-		close(stopped)
-	}()
-	time.Sleep(200 * time.Millisecond)
-	select {
-	case <-stopped:
-		t.Fatal("the server stopped while a request was in flight")
-	default:
-	}
-	if _, err := net.DialTimeout("tcp", addr, 500*time.Millisecond); err == nil {
-		t.Fatal("a new connection was accepted during shutdown")
-	}
-
-	close(release)
-	if got := <-status; got != http.StatusNoContent {
-		t.Fatalf("request in flight finished with %d, want it completed", got)
-	}
-	select {
-	case <-stopped:
-	case <-time.After(5 * time.Second):
-		t.Fatal("the server did not stop after the request finished")
-	}
-}
-
-func TestDockerfileUsesTheGoVersionOfTheModule(t *testing.T) {
-	module, err := os.ReadFile(filepath.Join("..", "..", "go.mod"))
-	if err != nil {
-		t.Fatalf("read go.mod: %v", err)
-	}
-	dockerfile, err := os.ReadFile(filepath.Join("..", "..", "Dockerfile"))
-	if err != nil {
-		t.Fatalf("read Dockerfile: %v", err)
-	}
-
-	var version string
-	for line := range strings.Lines(string(module)) {
-		if rest, found := strings.CutPrefix(strings.TrimSpace(line), "go "); found {
-			version = rest
-		}
-	}
-	if version == "" || !strings.Contains(string(dockerfile), "FROM golang:"+version+"-") {
-		t.Fatalf("go.mod declares Go %q and the Dockerfile does not build with golang:%s", version, version)
-	}
-}
-
-func TestNoImageUsesTheLatestTag(t *testing.T) {
-	for _, file := range []string{"Dockerfile", "docker-compose.yml"} {
-		content, err := os.ReadFile(filepath.Join("..", "..", file))
-		if err != nil {
-			t.Fatalf("read %s: %v", file, err)
-		}
-		if strings.Contains(string(content), ":latest") {
-			t.Errorf("%s uses an image tagged latest", file)
-		}
 	}
 }

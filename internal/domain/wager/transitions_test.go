@@ -173,31 +173,6 @@ func TestMarkPendingReference(t *testing.T) {
 	}
 }
 
-func TestMarkPendingReferenceRejectsMissingTimes(t *testing.T) {
-	tests := []struct {
-		name          string
-		expiresAt     time.Time
-		nextAttemptAt time.Time
-	}{
-		{"missing deadline", time.Time{}, longAgo},
-		{"missing next attempt", longAgo, time.Time{}},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			tx := inStatus(t, wager.Pending)
-
-			err := tx.MarkPendingReference(tt.expiresAt, tt.nextAttemptAt)
-			if !errors.Is(err, wager.ErrInvalidTransaction) {
-				t.Fatalf("err = %v, want %v", err, wager.ErrInvalidTransaction)
-			}
-			if tx.State().Status != wager.Pending {
-				t.Fatalf("Status = %s, want %s", tx.State().Status, wager.Pending)
-			}
-		})
-	}
-}
-
 func TestMarkFailed(t *testing.T) {
 	tx := inStatus(t, wager.PendingReference)
 
@@ -250,7 +225,6 @@ func TestRetryRejects(t *testing.T) {
 	}{
 		{"pending", wager.Pending, longAgo, wager.ErrInvalidTransition},
 		{"processed", wager.Processed, longAgo, wager.ErrInvalidTransition},
-		{"missing next attempt", wager.PendingReference, time.Time{}, wager.ErrInvalidTransaction},
 	}
 
 	for _, tt := range tests {

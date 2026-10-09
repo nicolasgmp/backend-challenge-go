@@ -21,15 +21,6 @@ var (
 	ErrInvalidEntry     = errors.New("ledger: invalid entry")
 )
 
-func ParseDirection(s string) (Direction, error) {
-	switch direction := Direction(s); direction {
-	case Debit, Credit:
-		return direction, nil
-	default:
-		return "", ErrInvalidDirection
-	}
-}
-
 type Fields struct {
 	WalletID      ids.WalletID
 	TransactionID ids.TransactionID
