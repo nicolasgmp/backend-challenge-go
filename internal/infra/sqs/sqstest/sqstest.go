@@ -22,8 +22,8 @@ const (
 	Region               = "us-east-1"
 	gatewayPort          = "4566/tcp"
 	healthPath           = "/_ministack/health"
-	localAccessKeyID     = "local-test-access-key"
-	localSecretAccessKey = "local-test-secret-key"
+	LocalAccessKeyID     = "local-test-access-key"
+	LocalSecretAccessKey = "local-test-secret-key"
 )
 
 type QueueConfig struct {
@@ -40,6 +40,16 @@ type Queues struct {
 func Start(ctx context.Context, tb testing.TB) *sqs.Client {
 	tb.Helper()
 
+	return sqs.New(sqs.Options{
+		Region:       Region,
+		BaseEndpoint: aws.String(StartEndpoint(ctx, tb)),
+		Credentials:  credentials.NewStaticCredentialsProvider(LocalAccessKeyID, LocalSecretAccessKey, ""),
+	})
+}
+
+func StartEndpoint(ctx context.Context, tb testing.TB) string {
+	tb.Helper()
+
 	ctr, err := testcontainers.Run(ctx, Image,
 		testcontainers.WithExposedPorts(gatewayPort),
 		testcontainers.WithWaitStrategy(wait.ForHTTP(healthPath).WithPort(gatewayPort)),
@@ -53,12 +63,7 @@ func Start(ctx context.Context, tb testing.TB) *sqs.Client {
 	if err != nil {
 		tb.Fatalf("sqstest: resolve endpoint: %v", err)
 	}
-
-	return sqs.New(sqs.Options{
-		Region:       Region,
-		BaseEndpoint: aws.String(endpoint),
-		Credentials:  credentials.NewStaticCredentialsProvider(localAccessKeyID, localSecretAccessKey, ""),
-	})
+	return endpoint
 }
 
 func CreateFIFOQueue(ctx context.Context, tb testing.TB, client *sqs.Client, cfg QueueConfig) Queues {

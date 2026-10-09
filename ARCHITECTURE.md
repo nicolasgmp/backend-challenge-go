@@ -1,6 +1,6 @@
 # Arquitetura
 
-Este documento registra as decisões técnicas da solução. Cada seção é preenchida no grupo de tasks de `openspec/changes/wallet-wagering-service/tasks.md` em que a decisão é tomada; seções ainda vazias estão marcadas como pendentes.
+Este documento registra as decisões técnicas da solução. Cada decisão traz o motivo, as alternativas descartadas quando houve e o trecho do enunciado (`docs/challenge.md`) em que se baseia. O que é interpretação ou escolha deste projeto está marcado como tal, e a seção 15 reúne as limitações.
 
 ## 1. Dinheiro
 
@@ -161,7 +161,7 @@ Cinco migrations em `migrations/`, uma por tabela, cada uma com `up` e `down`. O
 
 Os testes de integração usam PostgreSQL real (`postgres:17.6-alpine`) num container, e executam os mesmos arquivos `.sql` de `migrations/`. Os alvos `make migrate-up` e `make migrate-down` usam a ferramenta `golang-migrate` sobre os mesmos arquivos. Cada teste recebe um banco próprio, copiado de um modelo com as migrations já aplicadas, para que um teste não veja os dados de outro.
 
-- **Base:** "Migrations versionadas, com aplicação e reversão documentadas". Os comandos estão no `README.md` (grupo 18 do `tasks.md`).
+- **Base:** "Migrations versionadas, com aplicação e reversão documentadas". Os comandos estão no `README.md`.
 
 ### 2.6. Repositórios
 
@@ -242,7 +242,7 @@ Os testes de `test/integration` rodam contra PostgreSQL real:
 | mesma chave em duas carteiras, ao mesmo tempo | uma processada e um conflito `IDEMPOTENCY_KEY_REUSED` |
 | falha injetada em cada escrita | nenhuma transação, lançamento, evento ou mudança de saldo confirmados |
 
-Os cenários de saldo terminam reconciliando a carteira: o saldo gravado é igual a créditos menos débitos do ledger. Outro teste reconcilia 200 vezes uma carteira que recebe créditos em paralelo e não aceita nenhuma divergência falsa. A repetição com três instâncias do serviço é do grupo 19 do `tasks.md`.
+Os cenários de saldo terminam reconciliando a carteira: o saldo gravado é igual a créditos menos débitos do ledger. Outro teste reconcilia 200 vezes uma carteira que recebe créditos em paralelo e não aceita nenhuma divergência falsa. A repetição com três instâncias do serviço está na seção 15.4.
 
 ## 4. Idempotência
 
@@ -302,7 +302,7 @@ Uma requisição recusada como entrada inválida (seção 13.2) não grava nada.
 
 ## 5. Máquina de estados da transação
 
-Implementado em `internal/domain/wager`. O enunciado trata do assunto na seção 6.3. A tabela, o `CHECK` que impede `PENDING` gravado e o trigger de estado terminal são do grupo 9 do `tasks.md` e ainda não existem.
+Implementado em `internal/domain/wager`. O enunciado trata do assunto na seção 6.3. A tabela, o `CHECK` que impede `PENDING` gravado e o trigger de estado terminal estão na seção 2.4.
 
 ### 5.1. Estados e transições
 
@@ -366,11 +366,11 @@ Numa operação síncrona, uma falha de infraestrutura desfaz a transação SQL 
 
 `wager.NextAttempt` devolve o instante da próxima tentativa: 1 segundo depois da primeira, dobrando a cada tentativa (2, 4, 8, 16) até o teto de 30 segundos, e nunca depois do prazo da espera. Quando o intervalo passaria do prazo, a próxima tentativa é o próprio prazo; é a última.
 
-- **Base:** "Um worker deve tentar novamente com backoff exponencial". Os valores de 1 e 30 segundos são escolha deste projeto. O prazo e o worker são dos grupos 11 e 16 do `tasks.md` e serão descritos na seção 7.
+- **Base:** "Um worker deve tentar novamente com backoff exponencial". Os valores de 1 e 30 segundos são escolha deste projeto. O prazo e o worker estão na seção 7.
 
 ## 6. Reversões (`REFUND` e `ROLLBACK`)
 
-As regras estão em `internal/domain/wager` (`EffectOf` e `ValidateReference`). O enunciado trata do assunto na seção 7. A busca da referência no banco, a checagem de saldo e o índice único são dos grupos 9 a 11 do `tasks.md`.
+As regras estão em `internal/domain/wager` (`EffectOf` e `ValidateReference`). O enunciado trata do assunto na seção 7. A busca da referência no banco e a checagem de saldo estão nas seções 3 e 7; o índice único, na seção 2.4.
 
 ### 6.1. O que cada tipo movimenta
 
@@ -429,7 +429,7 @@ Um `ROLLBACK` de `WIN` ou de `REFUND` debita a carteira. Se o saldo não cobre, 
 
 ## 7. Referências pendentes
 
-As regras estão em `internal/app` (`SubmitTransaction` e `ResolvePendingReference`). O laço do worker que as chama periodicamente é do grupo 16 do `tasks.md`.
+As regras estão em `internal/app` (`SubmitTransaction` e `ResolvePendingReference`). O laço do worker que as chama periodicamente está na seção 7.3.
 
 ### 7.1. Registro da espera
 
@@ -490,7 +490,7 @@ Implementado em `internal/infra/sqs` (cliente, filas, consumidor) e em `internal
 | `wallet-events.fifo` | saída de eventos (seção 9) | mesma configuração da de entrada |
 | `wallet-events-dlq.fifo` | DLQ dos eventos | |
 
-As quatro são criadas por `sqs.EnsureQueues`, que pode ser executada quantas vezes for preciso: criar uma fila que já existe com os mesmos atributos não muda nada. Um teste a executa duas vezes contra o MiniStack e confere os atributos. No Compose ela roda num job antes do serviço (grupo 18 do `tasks.md`).
+As quatro são criadas por `sqs.EnsureQueues`, que pode ser executada quantas vezes for preciso: criar uma fila que já existe com os mesmos atributos não muda nada. Um teste a executa duas vezes contra o MiniStack e confere os atributos. No Compose ela roda num job antes do serviço (`cmd/queues`).
 
 - **Mudança em relação ao plano:** o plano previa um script de shell em `deploy/ministack/`. O provisionamento ficou em Go porque assim é testado com o mesmo cliente e contra o mesmo broker dos demais testes, sem depender de uma ferramenta de linha de comando dentro de um container.
 - **Base:** "Provisione as filas `wager-transactions.fifo` e `wager-transactions-dlq.fifo`, incluindo a configuração de redrive."
@@ -570,11 +570,13 @@ Quando o tratamento falha por erro transitório ou inesperado, a mensagem não �
 | long polling | 20 s por padrão |
 | mensagens por lote | até 10, tratadas em paralelo |
 
+- **Mensagens da mesma carteira num lote:** o broker pode entregar várias mensagens do mesmo grupo de uma vez, e o consumidor as trata em paralelo. O resultado continua correto, pelo lock da carteira e pela idempotência, mas a ordem entre elas não é garantida: um `REFUND` enviado logo depois do seu `BET` pode ficar `PENDING_REFERENCE` por cerca de um segundo.
+- **`messageId` que o banco não consegue guardar** (por exemplo com o caractere nulo): é tratado como falha comum e só chega à DLQ pelo redrive, depois de cinco recebimentos.
 - **Base:** "Falhas transitórias exigem retry com backoff".
 
 ### 8.6. Encerramento
 
-Ao receber o cancelamento, o consumidor para de buscar mensagens. As que já estão em tratamento continuam com um contexto próprio, limitado pelo prazo de tratamento, e são concluídas e apagadas. Uma mensagem cujo tratamento falha durante o encerramento tem a visibilidade zerada, para que outra instância a pegue na hora. `Run` só retorna depois que o lote em andamento termina, e registra em log que parou.
+Ao receber o cancelamento, o consumidor para de buscar mensagens. As que já estão em tratamento continuam com um contexto próprio, limitado pelo prazo de tratamento, e são concluídas e apagadas. Uma mensagem cujo tratamento falha durante o encerramento tem a visibilidade zerada, para que outra instância a pegue na hora. `Run` só retorna depois que o lote em andamento termina, e registra em log que parou. A chamada que aplica o desfecho (apagar, enviar à DLQ ou mudar a visibilidade) tem um prazo próprio, curto, para ainda acontecer quando o tratamento consumiu todo o seu prazo.
 
 - **Base:** "Em `SIGTERM`, pare de buscar trabalho e conclua o processamento em andamento dentro do prazo, ou libere sua visibilidade para reentrega segura."
 
@@ -588,6 +590,7 @@ Testes com PostgreSQL e MiniStack reais, em `test/integration`:
 | mesmo `messageId` com outro corpo; `OPENING`; e uma mensagem válida da mesma carteira logo atrás | as duas primeiras vão à DLQ com o motivo; a válida é processada sem esperar |
 | banco inacessível e depois acessível | a mensagem fica na fila, o retry é contado, e ela é processada uma única vez depois da volta |
 | banco inacessível o tempo todo | a mensagem chega à DLQ depois de 5 recebimentos, sem nenhum efeito financeiro |
+| falha ao concluir a inbox, depois de o caso de uso já ter movimentado a carteira | nada é confirmado: nem inbox, nem transação, nem lançamento, nem evento; a reentrega processa a mensagem uma vez |
 
 ## 9. Outbox e publicação de eventos
 
@@ -609,13 +612,14 @@ A reserva é um único comando SQL: escolhe os registros pendentes e vencidos co
 | --- | --- |
 | dois publicadores ao mesmo tempo | cada um pula as linhas que o outro travou; nenhum espera e nenhum registro é reservado pelos dois |
 | publicação com sucesso | grava `published_at` |
-| publicação com falha | grava a tentativa e o erro, e reagenda: 1 s, 2 s, 4 s, até o teto de 60 s |
+| publicação com falha | conta a tentativa, grava um texto fixo de erro e reagenda: 1 s, 2 s, 4 s, até o teto de 60 s |
 | publicador morre depois do commit da operação e antes de publicar | o evento continua pendente e outro publicador o envia |
 | publicador morre depois de publicar e antes de marcar | a reserva vence e outro publicador republica, com o mesmo `eventId` |
 | SQS fora do ar | os eventos ficam pendentes, com as tentativas contadas, e saem quando o SQS volta; as operações continuam sendo processadas |
 
 - **Sem descarte:** não há limite de tentativas. Um evento cujo registro foi confirmado no banco nunca é abandonado.
 - **Fora de transação:** o envio ao SQS acontece sem transação SQL aberta, para que um SQS lento não segure conexões do banco.
+- **Cancelamento no meio de um lote:** os registros já reservados e ainda não enviados ficam com a reserva; vencido o prazo dela, qualquer publicador os pega. Nada é perdido.
 - **Base:** "Ele deve suportar múltiplos publishers, disputa por registros, backoff e recuperação de trabalho abandonado." e "Demonstre recuperação após interrupção entre commit e publicação e entre publicação e confirmação na outbox. Eventos pendentes devem ser assumidos por outra instância; republicações devem preservar o `eventId`."
 
 ### 9.3. Roteamento e consumo
@@ -650,7 +654,7 @@ Testes com PostgreSQL e MiniStack reais, em `test/integration`:
 
 ## 10. Autenticação e autorização
 
-Implementado em `internal/infra/auth` (validação do token), `internal/app` (política por chamador) e `deploy/keycloak` (realm). O enunciado trata do assunto na seção 2. A aplicação das regras em cada rota é do grupo 14 do `tasks.md`.
+Implementado em `internal/infra/auth` (validação do token), `internal/app` (política por chamador) e `deploy/keycloak` (realm). O enunciado trata do assunto na seção 2. A aplicação das regras em cada rota está na seção 12.
 
 ### 10.1. IdP e fluxo
 
@@ -736,7 +740,68 @@ No SQS não há token: o controle é do broker, por credenciais e pela política
 
 ## 11. Composição com Fx e shutdown
 
-_Pendente (grupo 17 do `tasks.md`)._
+Implementado em `internal/bootstrap`; `cmd/server/main.go` contém só `fx.New(bootstrap.Options(...)).Run()`. O enunciado trata do assunto na seção 4 ("Composição e ciclo de vida").
+
+### 11.1. Módulos
+
+| Módulo Fx | O que fornece |
+| --- | --- |
+| configuração | `Config`, lida das variáveis de ambiente e validada antes de qualquer conexão |
+| `observability` | logger JSON, métricas, verificador de saúde |
+| `postgres` | pool de conexões, `TxRunner`, os repositórios, a outbox e a inbox, cada um como a porta de `internal/app` que implementa |
+| `sqs` | cliente e endereços das quatro filas |
+| `auth` | verificador de tokens |
+| `app` | relógio e `app.Service`, com os casos de uso |
+| `workers` | consumidor SQS, publicador da outbox e worker de referências |
+| `http` | servidor HTTP com as rotas |
+
+Tudo é injetado por construtor (`fx.Provide`); os componentes que rodam em segundo plano são ligados por `fx.Invoke`, e cada um registra seus ganchos no `fx.Lifecycle`.
+
+- **Base:** "Use Uber Fx na composição de configuração, conexões, repositórios, casos de uso, handlers e workers, com injeção por construtores e organização por `fx.Module`, `fx.Provide` e `fx.Invoke`."
+
+### 11.2. Configuração
+
+A configuração vem só de variáveis de ambiente, lidas com a biblioteca padrão. Uma variável obrigatória ausente ou um valor inválido impede a inicialização, e o erro cita o **nome** da variável, nunca o valor. A URL do banco e as credenciais da AWS são guardadas no tipo `Secret` (seção 14.1). A lista completa, com descrição, está no `.env.example`; um teste confere que toda variável lida pelo serviço aparece nesse arquivo.
+
+### 11.3. Inicialização
+
+Antes de aceitar tráfego o serviço verifica as três dependências. Se qualquer verificação falha, a inicialização falha e o processo termina com código de saída diferente de zero.
+
+| Dependência | Verificação |
+| --- | --- |
+| PostgreSQL | `Ping` na criação do pool |
+| SQS | busca do endereço das quatro filas |
+| IdP | leitura das chaves públicas do realm |
+
+Só depois disso sobem, nesta ordem, os workers e o servidor HTTP.
+
+### 11.4. Encerramento
+
+O Fx executa os ganchos de parada na ordem inversa da de início. A ordem resultante é:
+
+1. a readiness passa a responder `503`;
+2. o servidor HTTP para de aceitar conexões e espera as requisições em andamento terminarem;
+3. o consumidor SQS, o publicador da outbox e o worker de referências recebem o cancelamento; cada gancho espera o respectivo `Run` retornar;
+4. o pool do banco é fechado.
+
+| Regra | Como é cumprida |
+| --- | --- |
+| prazo total | 25 segundos por padrão (`SHUTDOWN_TIMEOUT`), abaixo dos 30 segundos de tolerância do Compose |
+| término observável dos workers | cada um registra em log que parou, e o gancho de parada só retorna quando a goroutine terminou |
+| prazo excedido | o gancho devolve erro, o contexto das operações é cancelado e as transações SQL em aberto são desfeitas; nada parcial é confirmado |
+| consumidor | conclui as mensagens em tratamento e libera a visibilidade das que falharem (seção 8.6) |
+
+- **Base:** os quatro itens de "Gerencie servidor, workers e recursos com `fx.Lifecycle`": validação na inicialização, término observável dos workers, interrupção de novas entradas com conclusão do trabalho em andamento, e fechamento das dependências por último.
+
+### 11.5. Demonstração
+
+| Teste | O que confere |
+| --- | --- |
+| `fx.ValidateApp`, sem Docker | o grafo de dependências está completo e sem ciclo |
+| aplicação inteira iniciada e encerrada duas vezes, com PostgreSQL, Keycloak e MiniStack reais | readiness `200`, uma carteira aberta por HTTP com token real, a ordem de encerramento pelos logs (readiness, HTTP, workers, banco), nenhuma goroutine restante e nenhum segredo nos logs |
+| inicialização sem banco, sem filas ou sem IdP | a inicialização falha |
+| binário executado sem variáveis, e com banco inacessível | código de saída diferente de zero; a saída cita a variável e não traz a senha |
+| servidor HTTP com requisição em andamento durante a parada | a requisição termina com sucesso e novas conexões são recusadas |
 
 ## 12. Contrato HTTP: códigos e corpos de erro
 
@@ -945,13 +1010,13 @@ No código são dois tipos de erro, `failure.InvalidInputError` e `failure.Rejec
 
 `PROCESSING_FAILED` marca a transação `FAILED`, uma falha permanente de infraestrutura. Não é rejeição de negócio.
 
-### 13.5. O que ainda não está implementado
+### 13.5. Onde cada código é produzido
 
-Este grupo entrega só os códigos e os tipos de erro. As regras que produzem cada código são dos grupos 5, 6 e 11 do `tasks.md`; a tradução para status HTTP e para a DLQ é dos grupos 14 e 15.
+As regras que produzem cada código estão no domínio (seções 5, 6 e 18) e nos casos de uso (seções 3, 4 e 7). A tradução para status HTTP está na seção 12, e para a DLQ, na seção 8.4.
 
 ## 14. Observabilidade
 
-Implementado em `internal/infra/observability`. O enunciado trata do assunto na seção 12. A rota `/metrics` e as de saúde são montadas no grupo 14 do `tasks.md`; a ligação com o PostgreSQL e o SQS é do grupo 17.
+Implementado em `internal/infra/observability`. O enunciado trata do assunto na seção 12. A rota `/metrics` e as de saúde estão na seção 12; a ligação com o PostgreSQL e o SQS, na seção 11.
 
 ### 14.1. Logs
 
@@ -1011,7 +1076,65 @@ A resposta de readiness traz só o nome da dependência (`postgres`, `sqs`), nun
 
 ## 15. Limitações, interpretações adotadas e trabalho não concluído
 
-_Pendente (grupo 19 do `tasks.md`)._
+### 15.1. Interpretações adotadas
+
+Pontos em que o enunciado deixa a escolha em aberto, ou em que a regra adotada vai além do mínimo. Cada um está detalhado na seção indicada.
+
+| Tema | Interpretação | Seção |
+| --- | --- | --- |
+| entrada inválida × rejeição | o que se julga só pela requisição não grava nada; o que depende do estado gravado vira `REJECTED` | 13.1 |
+| jogador ou moeda divergentes da carteira | rejeição gravada, para que quem envia pela fila receba o evento | 13.1 |
+| operação conhecida com outra chave | conflito `TRANSACTION_ALREADY_REGISTERED`, e não replay | 4.3 |
+| reversões da mesma operação | no máximo uma reversão processada, de qualquer tipo | 6.3 |
+| `FAILED` | só para pendência de referência que falha cinco vezes seguidas por erro inesperado; não gera evento | 5.3 |
+| referência pendente | prazo (TTL) de 5 minutos em vez de número de tentativas | 7.2 |
+| transação de outro provedor | `404` na consulta por id interno; `403` quando o caminho ou o corpo nomeiam outro provedor | 10.4 |
+| status HTTP | `422` para rejeição, `202` para pendência, `409` para conflito | 12.2 |
+| mensagens inválidas na fila | enviadas à DLQ pelo próprio consumidor, sem esperar o redrive | 8.4 |
+| destino dos eventos | fila FIFO `wallet-events.fifo`, agrupada por carteira | 9.3 |
+
+### 15.2. Limitações conhecidas
+
+| Limitação | Seção |
+| --- | --- |
+| valores até 92.233.720.368.547.758,07 por operação e por saldo; só BRL, USD e EUR | 1.2, 1.4 |
+| leitura de JSON pela biblioteca padrão: chave repetida vale a última, e o nome do campo é aceito em qualquer caixa | 1.6, 12.5 |
+| uma rejeição encerra o `externalTransactionId`, inclusive por jogador ou moeda divergentes | 4.4 |
+| aposta reembolsada não volta a ser reversível depois que o reembolso é desfeito | 6.4 |
+| um `WIN` pode referenciar uma aposta já reembolsada | 6.2 |
+| o banco não confere a coerência entre linhas de tabelas diferentes, nem impede a exclusão de transação sem lançamento | 2.4 |
+| relógios diferentes entre instância e banco atrasam ou adiantam a publicação de um evento na mesma diferença | 2.6 |
+| a ordem dos eventos de uma carteira não é garantida com mais de um publicador | 9.3 |
+| envio à DLQ e remoção da origem não são atômicos | 8.4 |
+| com o IdP fora do ar, um token de assinatura inválida recebe `503` em vez de `401` | 10.2 |
+| o tipo `Secret` não protege um campo não exportado nem verbos numéricos do `fmt` | 14.1 |
+| o teste de arquitetura olha só os imports diretos | 20 |
+| a versão de uma carteira estouraria depois de 9 quintilhões de movimentações, e o instante de atualização pode retroceder se o relógio de uma instância estiver atrasado; nada financeiro depende dele | 18 |
+
+### 15.3. Trabalho não concluído
+
+- **Partidas dobradas, tracing com OpenTelemetry, dashboards e teste de carga:** são diferenciais opcionais do enunciado e não foram feitos. O teste ponta a ponta registra em log o tempo de 90 operações sobre 30 carteiras em três instâncias, sem metodologia de carga.
+- **Usuário de banco separado do dono das tabelas:** o serviço usa o mesmo usuário que cria o schema, que portanto poderia desativar um trigger.
+- **TLS:** a stack local usa HTTP sem TLS entre os serviços e no Keycloak.
+
+### 15.4. Verificação ponta a ponta
+
+Os testes de `test/e2e` rodam contra a stack do Docker Compose, com três instâncias do serviço como processos separados:
+
+| Cenário | Resultado conferido |
+| --- | --- |
+| a mesma aposta 50 vezes em paralelo, distribuída entre as três instâncias | um único débito e o mesmo `transactionId` em todas as respostas |
+| duas apostas de 80,00 sobre 100,00 em instâncias diferentes, e o reenvio das duas | uma `PROCESSED`, uma `REJECTED` por `INSUFFICIENT_FUNDS`, saldo 20,00, sem mudança no reenvio |
+| 30 carteiras ao mesmo tempo | todas concluem com o saldo esperado |
+| a mesma operação por HTTP e por SQS, em sequência e ao mesmo tempo; 80,00 por cada canal sobre 100,00 | uma única aplicação; na disputa, uma processada e uma rejeitada |
+| `REFUND` antes do `BET`; `ROLLBACK` cuja referência nunca chega | resolvido depois; rejeitado com `REFERENCE_NOT_FOUND` e evento de rejeição |
+| uma instância morta com `docker kill` durante a carga | nenhuma movimentação duplicada; todo evento gravado na outbox chega à fila de eventos |
+| as três instâncias reiniciadas com pendência aberta | replays devolvem o resultado original; a pendência é retomada e resolvida |
+| PostgreSQL parado e religado | `503` e readiness falso durante a parada; o reenvio é processado uma única vez depois |
+| MiniStack parado e religado | as operações continuam; os eventos ficam pendentes e saem depois da volta |
+| acessos sem token, com token adulterado, de outro provedor e sem o escopo | `401`, `403` e `404`, sem efeito financeiro |
+
+Todo cenário termina reconciliando a carteira: o saldo gravado é igual a créditos menos débitos do ledger.
 
 ## 16. Identificadores
 
@@ -1043,7 +1166,7 @@ As funções `Parse` devolvem um único erro, `ids.ErrInvalid`. A tradução par
 
 ## 17. Lançamento do ledger
 
-Implementado em `internal/domain/ledger`. O enunciado trata do assunto na seção 6.4. A tabela, os índices únicos e os triggers que impedem alteração são do grupo 9 do `tasks.md` e ainda não existem.
+Implementado em `internal/domain/ledger`. O enunciado trata do assunto na seção 6.4. A tabela, os índices únicos e os triggers que impedem alteração estão na seção 2.4.
 
 ### 17.1. Conteúdo
 
@@ -1068,7 +1191,7 @@ Todos os casos devolvem o mesmo erro, `ledger.ErrInvalidEntry`. Um lançamento i
 
 ## 18. Carteira
 
-Implementado em `internal/domain/wallet`. O enunciado trata do assunto na seção 6.2. O controle de concorrência, a tabela e a unicidade por jogador e moeda são dos grupos 9 a 11 do `tasks.md` e estão nas seções 2 e 3 deste documento, ainda pendentes.
+Implementado em `internal/domain/wallet`. O enunciado trata do assunto na seção 6.2. O controle de concorrência, a tabela e a unicidade por jogador e moeda estão nas seções 2 e 3.
 
 ### 18.1. Conteúdo e encapsulamento
 
@@ -1107,7 +1230,7 @@ A carteira não conhece códigos de falha nem tipos de operação. Ela devolve u
 
 ## 19. Eventos de domínio
 
-Implementado em `internal/domain/events`. O enunciado trata do assunto na seção 11. A gravação na outbox, a publicação e o roteamento são dos grupos 10, 11 e 16 do `tasks.md` e estão na seção 9, ainda pendente.
+Implementado em `internal/domain/events`. O enunciado trata do assunto na seção 11. A gravação na outbox, a publicação e o roteamento estão na seção 9.
 
 ### 19.1. Envelope
 
