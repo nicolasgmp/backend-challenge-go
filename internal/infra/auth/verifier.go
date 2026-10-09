@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
 	"strings"
 	"time"
 
@@ -68,4 +69,20 @@ func callerFrom(parsed claims) (app.Caller, error) {
 	}
 	caller.ProviderID = providerID
 	return caller, nil
+}
+
+func Ping(ctx context.Context, keysURL string) error {
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, keysURL, nil)
+	if err != nil {
+		return fmt.Errorf("%w: invalid keys url", app.ErrIdPUnavailable)
+	}
+	response, err := http.DefaultClient.Do(request)
+	if err != nil {
+		return fmt.Errorf("%w: signing keys could not be fetched", app.ErrIdPUnavailable)
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		return fmt.Errorf("%w: keys endpoint answered %d", app.ErrIdPUnavailable, response.StatusCode)
+	}
+	return nil
 }

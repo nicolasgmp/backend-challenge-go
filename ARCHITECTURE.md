@@ -730,11 +730,13 @@ A regra está em dois métodos de `app.Caller`: `CanSubmitAs` e `CanReadProvider
 
 ### 10.5. Segredos
 
-O arquivo do realm não tem valor de segredo: cada cliente declara `"secret": "${VARIAVEL}"`, e o Keycloak troca o marcador pela variável de ambiente ao importar. Os valores vêm do `.env`, que não é versionado (grupo 18).
+O arquivo do realm não tem valor de segredo: cada cliente declara `"secret": "${VARIAVEL}"`, e o Keycloak troca o marcador pela variável de ambiente ao importar. Os valores vêm do `.env`, que não é versionado.
 
 ### 10.6. Acesso à fila
 
-No SQS não há token: o controle é do broker, por credenciais e pela política da fila (grupo 15). O `providerId` de uma mensagem vem do corpo e passa pelas mesmas validações de domínio de uma requisição HTTP.
+No SQS não há token: o controle é do broker. O serviço e o job de filas só sobem com as credenciais da AWS configuradas e assinam todas as chamadas com elas.
+
+- **Limitação do ambiente local:** o MiniStack aceita chamadas sem assinatura e não aplica política de fila, e o provisionamento não cria política. Na AWS, o controle seria uma política IAM que permite `sqs:SendMessage` na fila de entrada só aos produtores, e `sqs:ReceiveMessage`, `sqs:DeleteMessage` e `sqs:ChangeMessageVisibility` só ao papel do serviço. O `providerId` de uma mensagem vem do corpo e passa pelas mesmas validações de domínio de uma requisição HTTP.
 
 - **Base:** "O acesso à mensageria deve ser controlado por credenciais e políticas do broker, preservando as validações de domínio no consumidor."
 
@@ -773,7 +775,7 @@ Antes de aceitar tráfego o serviço verifica as três dependências. Se qualque
 | SQS | busca do endereço das quatro filas |
 | IdP | leitura das chaves públicas do realm |
 
-Só depois disso sobem, nesta ordem, os workers e o servidor HTTP.
+O banco e as filas são verificados na construção dos componentes, antes de qualquer gancho de início. A verificação do IdP é um gancho de início, executado depois que os workers sobem e antes do servidor HTTP: o consumidor não depende do IdP, e se a verificação falha o Fx desfaz o que já tinha iniciado.
 
 ### 11.4. Encerramento
 
@@ -782,14 +784,14 @@ O Fx executa os ganchos de parada na ordem inversa da de início. A ordem result
 1. a readiness passa a responder `503`;
 2. o servidor HTTP para de aceitar conexões e espera as requisições em andamento terminarem;
 3. o consumidor SQS, o publicador da outbox e o worker de referências recebem o cancelamento; cada gancho espera o respectivo `Run` retornar;
-4. o pool do banco é fechado.
+4. as conexões ociosas do cliente SQS e o pool do banco são fechados.
 
 | Regra | Como é cumprida |
 | --- | --- |
 | prazo total | 25 segundos por padrão (`SHUTDOWN_TIMEOUT`), abaixo dos 30 segundos de tolerância do Compose |
 | término observável dos workers | cada um registra em log que parou, e o gancho de parada só retorna quando a goroutine terminou |
-| prazo excedido | o gancho devolve erro, o contexto das operações é cancelado e as transações SQL em aberto são desfeitas; nada parcial é confirmado |
-| consumidor | conclui as mensagens em tratamento e libera a visibilidade das que falharem (seção 8.6) |
+| prazo excedido | o Fx abandona os ganchos restantes e o processo termina com código de saída diferente de zero. Nada parcial é confirmado porque uma transação SQL sem commit é desfeita pelo PostgreSQL quando a conexão cai; a mensagem em tratamento volta a ficar visível quando o visibility timeout vence |
+| consumidor | conclui as mensagens em tratamento e libera a visibilidade das que falharem (seção 8.6). O prazo de tratamento de uma mensagem é de 15 segundos, abaixo do prazo de encerramento |
 
 - **Base:** os quatro itens de "Gerencie servidor, workers e recursos com `fx.Lifecycle`": validação na inicialização, término observável dos workers, interrupção de novas entradas com conclusão do trabalho em andamento, e fechamento das dependências por último.
 
@@ -1092,6 +1094,7 @@ Pontos em que o enunciado deixa a escolha em aberto, ou em que a regra adotada v
 | status HTTP | `422` para rejeição, `202` para pendência, `409` para conflito | 12.2 |
 | mensagens inválidas na fila | enviadas à DLQ pelo próprio consumidor, sem esperar o redrive | 8.4 |
 | destino dos eventos | fila FIFO `wallet-events.fifo`, agrupada por carteira | 9.3 |
+| aceite síncrono | `PENDING` nunca é gravado; operação sem dependência é concluída num único commit, e o banco recusa o estado | 5.1 |
 
 ### 15.2. Limitações conhecidas
 
@@ -1107,6 +1110,8 @@ Pontos em que o enunciado deixa a escolha em aberto, ou em que a regra adotada v
 | a ordem dos eventos de uma carteira não é garantida com mais de um publicador | 9.3 |
 | envio à DLQ e remoção da origem não são atômicos | 8.4 |
 | com o IdP fora do ar, um token de assinatura inválida recebe `503` em vez de `401` | 10.2 |
+| o broker local não exige credenciais nem aplica política de fila | 10.6 |
+| se o prazo de encerramento vence, o processo termina sem executar os ganchos restantes | 11.4 |
 | o tipo `Secret` não protege um campo não exportado nem verbos numéricos do `fmt` | 14.1 |
 | o teste de arquitetura olha só os imports diretos | 20 |
 | a versão de uma carteira estouraria depois de 9 quintilhões de movimentações, e o instante de atualização pode retroceder se o relógio de uma instância estiver atrasado; nada financeiro depende dele | 18 |

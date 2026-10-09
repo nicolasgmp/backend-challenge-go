@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
 	"strconv"
 	"time"
 
@@ -33,6 +34,7 @@ type Config struct {
 	Region          string
 	AccessKeyID     string
 	SecretAccessKey string
+	HTTPClient      *http.Client
 }
 
 type Queues struct {
@@ -46,11 +48,15 @@ func NewClient(cfg Config) (*awssqs.Client, error) {
 	if cfg.Endpoint == "" || cfg.Region == "" || cfg.AccessKeyID == "" || cfg.SecretAccessKey == "" {
 		return nil, ErrInvalidConfig
 	}
-	return awssqs.New(awssqs.Options{
+	options := awssqs.Options{
 		Region:       cfg.Region,
 		BaseEndpoint: aws.String(cfg.Endpoint),
 		Credentials:  credentials.NewStaticCredentialsProvider(cfg.AccessKeyID, cfg.SecretAccessKey, ""),
-	}), nil
+	}
+	if cfg.HTTPClient != nil {
+		options.HTTPClient = cfg.HTTPClient
+	}
+	return awssqs.New(options), nil
 }
 
 func EnsureQueues(ctx context.Context, client *awssqs.Client) (Queues, error) {
