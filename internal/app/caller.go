@@ -25,3 +25,11 @@ func (c Caller) HasScope(scope string) bool {
 func (c Caller) IsProvider() bool {
 	return !c.ProviderID.IsZero()
 }
+
+func (c Caller) CanSubmitAs(providerID ids.ProviderID) bool {
+	return c.IsProvider() && c.ProviderID == providerID
+}
+
+func (c Caller) CanReadProvider(providerID ids.ProviderID) bool {
+	return !c.IsProvider() || c.ProviderID == providerID
+}

@@ -56,3 +56,38 @@ func TestCaller(t *testing.T) {
 		})
 	}
 }
+
+func TestCallerProviderPolicy(t *testing.T) {
+	providerA, err := ids.ParseProviderID("provider-a")
+	if err != nil {
+		t.Fatalf("ParseProviderID: %v", err)
+	}
+	providerB, err := ids.ParseProviderID("provider-b")
+	if err != nil {
+		t.Fatalf("ParseProviderID: %v", err)
+	}
+
+	tests := []struct {
+		name      string
+		caller    app.Caller
+		target    ids.ProviderID
+		canSubmit bool
+		canRead   bool
+	}{
+		{"same provider", app.Caller{ProviderID: providerA}, providerA, true, true},
+		{"another provider", app.Caller{ProviderID: providerA}, providerB, false, false},
+		{"internal service", app.Caller{}, providerA, false, true},
+		{"provider reading an internal transaction", app.Caller{ProviderID: providerA}, ids.ProviderID{}, false, false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := tt.caller.CanSubmitAs(tt.target); got != tt.canSubmit {
+				t.Fatalf("CanSubmitAs = %t, want %t", got, tt.canSubmit)
+			}
+			if got := tt.caller.CanReadProvider(tt.target); got != tt.canRead {
+				t.Fatalf("CanReadProvider = %t, want %t", got, tt.canRead)
+			}
+		})
+	}
+}

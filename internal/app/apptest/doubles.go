@@ -2,6 +2,7 @@ package apptest
 
 import (
 	"strings"
+	"sync"
 	"time"
 
 	"jungle-gaming-challeng/internal/app"
@@ -18,12 +19,15 @@ func (c *Clock) Now() time.Time {
 }
 
 type Metrics struct {
+	mu    sync.Mutex
 	Calls []string
 }
 
 var _ app.Metrics = (*Metrics)(nil)
 
 func (m *Metrics) record(parts ...string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	m.Calls = append(m.Calls, strings.Join(parts, " "))
 }
 

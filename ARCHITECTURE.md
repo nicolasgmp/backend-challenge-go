@@ -78,7 +78,7 @@ A escrita produz `{"amount":"25.00","currency":"BRL"}`, com `amount` sempre em s
 
 ### 1.7. Persistência
 
-O valor será gravado como `BIGINT` de unidades mínimas e a moeda como `CHAR(3)`, sem conversão entre o tipo do domínio e o do banco. As tabelas estão na seção 2.4.md`.
+O valor é gravado como `BIGINT` de unidades mínimas e a moeda como `CHAR(3)`, sem conversão entre o tipo do domínio e o do banco. As tabelas estão na seção 2.4.
 
 - **Base:** "A persistência deve preservar exatamente valor e moeda, por exemplo com unidades mínimas em `BIGINT` ou decimal em `NUMERIC`."
 
@@ -182,7 +182,67 @@ Limitações conhecidas:
 
 ## 3. Controle de concorrência e locks
 
-_Pendente (grupo 11 do `tasks.md`)._
+Implementado em `internal/app` (casos de uso) sobre `internal/infra/postgres`. O enunciado trata do assunto na seção 8.
+
+### 3.1. Estratégia: lock pessimista por carteira
+
+Toda operação que lê ou altera um saldo começa travando a linha da carteira com `SELECT ... FOR UPDATE`. É a primeira instrução da transação, antes de qualquer outra leitura ou escrita.
+
+```
+BEGIN
+  define o prazo de espera por lock (só para esta transação)
+  SELECT ... FROM wallets WHERE id = $1 FOR UPDATE          <- primeiro
+  busca por chave e por operação (replay ou conflito)
+  resolve a referência, se houver
+  aplica no agregado (débito, crédito ou nada)
+  INSERT wager_transactions
+  UPDATE wallets (saldo, versão)                             <- só se houve movimentação
+  INSERT wallet_ledger_entries                               <- só se houve movimentação
+  INSERT outbox
+COMMIT
+```
+
+| Pergunta | Resposta |
+| --- | --- |
+| Duas operações da mesma carteira | a segunda espera a primeira confirmar ou desfazer, e só então lê o saldo |
+| Carteiras diferentes | não esperam uma pela outra; cada lock é de uma linha |
+| Lock global ou em memória | não existe; a coordenação é toda do banco, então vale entre processos e instâncias |
+| Espera sem fim | não: o prazo é de 5 segundos (configurável). Vencido, a operação falha como indisponibilidade transitória, sem gravar nada |
+| O mesmo caminho para HTTP, SQS e worker de referências | sim: HTTP e SQS chamam o mesmo caso de uso, e o worker reavalia a pendência com as mesmas regras e a mesma ordem de lock |
+
+- **Por quê pessimista:** a mesma trava que protege o saldo também põe em fila a checagem de idempotência e a de reversão anterior. Com controle otimista essas duas checagens precisariam de retry próprio.
+- **Alternativas descartadas:** controle otimista por versão com retry; atualização condicionada (`UPDATE ... WHERE balance >= $1`) sem lock, que não põe em fila a checagem de idempotência.
+- **Base:** "A coordenação deve ocorrer por carteira. Escolha locking pessimista, controle otimista com retry limitado, atualização atômica condicionada ou uma combinação justificável." e "locks globais são proibidos".
+
+### 3.2. O banco como segunda barreira
+
+O lock evita a disputa; as constraints garantem o resultado mesmo que o lock falhe ou não seja tomado (seção 2.4): saldo não negativo, uma operação por chave e por identificador externo, um lançamento por transação e por versão, uma reversão processada por referência.
+
+### 3.3. Disputa que o lock não cobre
+
+Duas requisições com a mesma chave de idempotência mas com `walletId` diferentes travam carteiras diferentes e chegam juntas ao `INSERT`. O índice único deixa passar uma só. A que perde recebe violação de unicidade, e o tratamento é:
+
+1. desfazer a transação;
+2. executar o caso de uso de novo, uma única vez;
+3. na segunda passada, a busca prévia encontra a linha vencedora e responde conforme ela: replay ou conflito.
+
+Uma segunda violação seguida é devolvida como erro.
+
+### 3.4. Demonstração
+
+Os testes de `test/integration` rodam contra PostgreSQL real:
+
+| Cenário | Resultado conferido |
+| --- | --- |
+| duas apostas distintas de 80,00 sobre 100,00, ao mesmo tempo | uma `PROCESSED`, uma `REJECTED` com `INSUFFICIENT_FUNDS`, saldo 20,00, um único débito; o reenvio das duas não muda nada |
+| a mesma aposta enviada 50 vezes em paralelo | um débito, uma transação, 49 respostas de replay com o mesmo `transactionId` |
+| 20 créditos de 10,00 em paralelo sobre saldo zero | saldo 200,00, versão 21, 20 lançamentos |
+| uma carteira travada | a aposta em outra carteira conclui; a aposta na carteira travada só conclui depois da liberação |
+| `REFUND` e `ROLLBACK` da mesma aposta, ao mesmo tempo | exatamente uma reversão `PROCESSED`; a outra `REJECTED` com `REFERENCE_ALREADY_REVERSED` |
+| mesma chave em duas carteiras, ao mesmo tempo | uma processada e um conflito `IDEMPOTENCY_KEY_REUSED` |
+| falha injetada em cada escrita | nenhuma transação, lançamento, evento ou mudança de saldo confirmados |
+
+Os cenários de saldo terminam reconciliando a carteira: o saldo gravado é igual a créditos menos débitos do ledger. Outro teste reconcilia 200 vezes uma carteira que recebe créditos em paralelo e não aceita nenhuma divergência falsa. A repetição com três instâncias do serviço é do grupo 19 do `tasks.md`.
 
 ## 4. Idempotência
 
@@ -204,9 +264,41 @@ O JSON é escrito a partir dos valores de domínio já validados, nunca reaprove
 - **Exemplo:** `{"externalTransactionId":"transaction-123","gameId":"fortune-chimp","kind":"BET","money":{"amount":"25.00","currency":"BRL"},"playerId":"0192f28f-5dc0-7d58-bdb2-814ad6a0f4a1","providerId":"provider-a","roundId":"round-987","walletId":"0192f291-27dd-7d3f-8071-5f8685deef37"}`
 - **Base:** "Persista um hash determinístico dos campos de negócio, usando JSON canônico com ordenação de chaves. Exclua a chave de idempotência e os metadados de transporte desse cálculo. Documente algoritmo, campos e normalizações, garantindo equivalência entre HTTP e SQS."
 
-### 4.2. Demais regras
+### 4.2. Duas identidades, as duas por provedor
 
-_Pendente (grupo 11 do `tasks.md`)._
+| Identidade | Tupla única no banco | Para que serve |
+| --- | --- | --- |
+| chave de idempotência | `(provider_id, idempotency_key)` | reconhecer o reenvio da mesma requisição |
+| operação financeira | `(provider_id, external_transaction_id)` | impedir que a mesma operação seja aplicada com outra chave |
+
+A chave é gravada exatamente como chegou; o servidor nunca a troca por uma calculada. Como as duas tuplas incluem o provedor, a chave e o identificador de um provedor não encontram nem afetam os de outro.
+
+A chave, o hash e o resultado ficam na própria linha da transação (`wager_transactions`). Não há tabela separada nem memória local, então a idempotência sobrevive ao reinício de todos os processos e vale em qualquer instância.
+
+- **Base:** "Idempotência deve ser persistente e sobreviver ao reinício de todos os processos." e "o servidor não deve substituir silenciosamente uma chave recebida por outra calculada."
+
+### 4.3. Decisão a cada requisição
+
+Com a carteira já travada, o caso de uso busca pela chave e pelo identificador externo e decide:
+
+| A chave existe | A operação existe | Hash | Resultado |
+| --- | --- | --- | --- |
+| não | não | | processa |
+| sim | | igual | replay: devolve o resultado gravado, com `idempotentReplay: true` |
+| sim | | diferente | conflito `IDEMPOTENCY_KEY_REUSED` |
+| não | sim | | conflito `TRANSACTION_ALREADY_REGISTERED` |
+
+- **Replay não reaplica nada:** não há movimentação, lançamento nem evento novos.
+- **Saldo do replay:** é o `result_balance` gravado no processamento original, mesmo que a carteira já tenha recebido outras movimentações.
+- **Replay de rejeição e de pendência:** devolve a mesma rejeição, com o mesmo `failureCode`, ou o mesmo `PENDING_REFERENCE`; nunca tenta de novo.
+- **Interpretação adotada:** o enunciado só proíbe reaplicar uma operação recebida com outra chave. Aqui isso é um conflito explícito, e não um replay, porque uma chave nova para uma operação antiga indica defeito no cliente.
+- **Base:** as quatro regras da seção 9, "Chave e conteúdo equivalentes [...]", "Chave reutilizada com conteúdo diferente [...]", "não pode ser reaplicada usando outra chave" e "o replay deve devolver o saldo observado no processamento original".
+
+### 4.4. Entrada inválida não ocupa a chave
+
+Uma requisição recusada como entrada inválida (seção 13.2) não grava nada. O mesmo `externalTransactionId` e a mesma chave podem ser reenviados depois de corrigidos. Uma rejeição de negócio, ao contrário, grava a transação como `REJECTED` e encerra aquele identificador.
+
+- **Limitação:** uma operação rejeitada por jogador ou moeda divergentes também encerra o identificador. O provedor reenvia com outro `externalTransactionId`.
 
 ## 5. Máquina de estados da transação
 
@@ -258,7 +350,8 @@ Qualquer outra origem devolve `wager.ErrInvalidTransition` e deixa a transação
 
 | Situação na tentativa de resolver | Método | Efeito |
 | --- | --- | --- |
-| referência ainda ausente, ou erro transitório | `Reschedule` | conta a tentativa, zera os erros inesperados, marca a próxima tentativa |
+| referência ainda ausente | `Reschedule` | conta a tentativa, zera os erros inesperados, marca a próxima tentativa |
+| erro transitório | nenhum | nada é gravado; a pendência continua vencida e é tentada de novo no próximo ciclo do worker |
 | erro inesperado | `RecordUnexpectedError` | conta a tentativa e o erro; devolve verdadeiro no quinto seguido |
 | quinto erro inesperado seguido | `MarkFailed` | `FAILED` com `PROCESSING_FAILED` |
 
@@ -310,6 +403,7 @@ Qualquer combinação fora da tabela é rejeitada com `REFERENCE_KIND_NOT_ALLOWE
 A referência inexistente é tratada antes, pela camada de aplicação, que grava a operação como `PENDING_REFERENCE` (seção 7).
 
 - **`WIN` com referência não confere valor.** O ganho não tem relação com o valor apostado; a referência só amarra o ganho a uma aposta processada da mesma rodada.
+- **Limitação:** um `WIN` que referencia uma aposta já reembolsada ou desfeita é aceito, e uma aposta com ganho pago ainda pode ser reembolsada. O enunciado só pede que o ganho aponte para uma aposta da mesma rodada; o `WIN` não ocupa nem consulta a vaga de reversão.
 - **Base:** "A operação e sua referência devem concordar em provedor, jogador, carteira, moeda e rodada. O valor da reversão precisa ser igual ao valor referenciado; reversões parciais não fazem parte do desafio."
 
 ### 6.3. Uma reversão processada por operação
@@ -335,7 +429,42 @@ Um `ROLLBACK` de `WIN` ou de `REFUND` debita a carteira. Se o saldo não cobre, 
 
 ## 7. Referências pendentes
 
-_Pendente (grupos 11 e 16 do `tasks.md`)._
+As regras estão em `internal/app` (`SubmitTransaction` e `ResolvePendingReference`). O laço do worker que as chama periodicamente é do grupo 16 do `tasks.md`.
+
+### 7.1. Registro da espera
+
+Um `REFUND`, um `ROLLBACK` ou um `WIN` com referência cuja operação referenciada ainda não chegou é gravado como `PENDING_REFERENCE`. Nesse momento:
+
+- nada é movimentado e nenhum lançamento é criado;
+- o prazo da espera é gravado: 5 minutos a partir do registro, configurável;
+- a primeira tentativa é marcada para 1 segundo depois;
+- o evento `WagerTransactionPendingReference` vai para a outbox, no mesmo commit.
+
+A referência é sempre procurada por `(providerId, referenceExternalTransactionId)`, com o provedor da própria operação. Uma operação de outro provedor com o mesmo identificador não é encontrada.
+
+### 7.2. Tentativas
+
+Cada tentativa trava a carteira, relê a pendência com lock, confere que ela ainda está pendente e vencida, e reavalia a operação com as mesmas validações de uma operação recém-chegada.
+
+| O que a tentativa encontra | Resultado |
+| --- | --- |
+| referência `PROCESSED` | a operação é aplicada: `PROCESSED`, com movimentação, lançamento e eventos; ou `REJECTED`, se alguma validação falhar |
+| referência `REJECTED` ou `FAILED` | `REJECTED` com `REFERENCE_NOT_PROCESSED`, sem esperar o prazo |
+| referência ausente ou também pendente, antes do prazo | reagenda: 2, 4, 8, 16 e depois 30 segundos, nunca além do prazo |
+| referência ausente ou também pendente, no prazo ou depois dele | `REJECTED` com `REFERENCE_NOT_FOUND` e evento de rejeição |
+| erro transitório | nada muda; a pendência continua vencida e é tentada no próximo ciclo |
+| erro inesperado | conta um erro; no quinto seguido, `FAILED` com `PROCESSING_FAILED` (seção 5.3) |
+
+- **Última tentativa:** a busca pela referência é feita antes de olhar o prazo. Se o serviço ficou parado além do prazo e a referência chegou nesse meio-tempo, a pendência é resolvida em vez de expirar.
+- **Várias instâncias:** a pendência, o prazo e a próxima tentativa estão no banco. Duas instâncias que peguem a mesma pendência são postas em fila pelo lock da carteira; a segunda encontra o estado já mudado e não faz nada.
+- **Duas reversões pendentes para a mesma referência:** quando a referência chega, a primeira a ser avaliada é processada e a outra é rejeitada com `REFERENCE_ALREADY_REVERSED`.
+- **Correlação:** os eventos da resolução levam o `correlationId` da requisição original, guardado na transação.
+- **TTL em vez de número de tentativas:** com um máximo de tentativas, o tempo total de espera dependeria do backoff. Com prazo, o provedor sabe até quando esperar.
+- **Base:** "Persista a operação como `PENDING_REFERENCE` quando a referência ainda não tiver chegado. Um worker deve tentar novamente com backoff exponencial, inclusive após reinicialização da aplicação." e "Defina um número máximo de tentativas ou TTL. Quando esgotado, finalize como `REJECTED`, informando um código de referência não encontrada e produzindo o evento de rejeição. Explique também o comportamento quando a referência existe, mas ainda está pendente ou terminou sem sucesso."
+
+### 7.3. Worker
+
+_Pendente (grupo 16 do `tasks.md`)._
 
 ## 8. Inbox e consumidor SQS
 
@@ -347,7 +476,86 @@ _Pendente (grupo 16 do `tasks.md`)._
 
 ## 10. Autenticação e autorização
 
-_Pendente (grupo 13 do `tasks.md`)._
+Implementado em `internal/infra/auth` (validação do token), `internal/app` (política por chamador) e `deploy/keycloak` (realm). O enunciado trata do assunto na seção 2. A aplicação das regras em cada rota é do grupo 14 do `tasks.md`.
+
+### 10.1. IdP e fluxo
+
+O IdP é o Keycloak, na versão `26.7.5`, com o fluxo `client_credentials`: cada provedor e o serviço interno são clientes confidenciais, com `client_id` e segredo. O serviço só valida tokens. Não emite token, não guarda senha e não tem tela de login.
+
+- **Por quê Keycloak e `client_credentials`:** é a recomendação do enunciado, e a comunicação aqui é sempre entre serviços, sem usuário humano.
+- **Base:** "Recomenda-se **Keycloak** no Docker Compose e `client_credentials` para comunicação entre serviços." e "Cadastro de senhas e emissão própria de tokens estão fora do escopo."
+
+### 10.2. Validação do token
+
+Feita com a biblioteca `coreos/go-oidc`. Um token só é aceito se passar nas quatro conferências:
+
+| Conferência | Recusa |
+| --- | --- |
+| assinatura, com as chaves públicas do realm | token adulterado, assinado por outra chave ou sem assinatura |
+| emissor (`iss`) igual ao realm configurado | token de outro realm ou de outro IdP |
+| audiência (`aud`) contém `wallet-service` | token emitido para outro serviço |
+| validade (`exp`) | token expirado |
+
+As chaves públicas são buscadas no Keycloak no primeiro uso e guardadas em memória; o serviço sobe mesmo com o IdP fora do ar.
+
+| Situação | Erro | Resposta HTTP |
+| --- | --- | --- |
+| token ausente ou inválido | `auth.ErrInvalidToken` | `401` |
+| chaves do IdP inacessíveis e nenhuma em memória | `app.ErrIdPUnavailable` | `503` |
+
+Um token nunca é aceito sem validação. Com as chaves já em memória, o serviço continua validando tokens enquanto o IdP estiver fora do ar.
+
+Os testes de integração rodam contra um Keycloak real, com o mesmo arquivo de realm do Compose, e cobrem cada linha das duas tabelas.
+
+- **Limitação:** para distinguir "IdP inacessível" de "token inválido", o código procura o trecho `fetching keys` na mensagem de erro da biblioteca, que não oferece um tipo de erro para isso. O teste de integração com o Keycloak parado acusa se uma versão futura mudar o texto.
+
+### 10.3. Identidade e permissões
+
+| Dado | De onde vem |
+| --- | --- |
+| provedor autorizado | claim `provider_id`, posta no token por um mapper do cliente no Keycloak. Um token sem a claim não é de provedor. O provedor nunca é deduzido de `azp` ou `client_id` |
+| permissões | escopos OAuth na claim `scope` |
+
+| Rota | Escopo | Regra adicional |
+| --- | --- | --- |
+| `POST /wallets` | `wallets:write` | |
+| `GET /wallets/:id`, `GET /wallets/:id/ledger` | `wallets:read` | |
+| `POST /wallets/:id/reconciliation` | `wallets:read` | não altera dados |
+| `POST /wagering/transactions` | `wagering:write` | o `providerId` do corpo tem de ser o da claim |
+| `GET` de transações | `wagering:read` | provedor só vê as suas |
+| `/health/*`, `/metrics` | nenhum | públicas |
+
+| Cliente no realm | Escopos | `provider_id` |
+| --- | --- | --- |
+| `provider-a`, `provider-b` | `wagering:write`, `wagering:read` | o próprio |
+| `wallet-internal` | `wallets:write`, `wallets:read`, `wagering:read` | não tem |
+
+Assim um provedor não abre nem consulta carteira, e o serviço interno não envia aposta. Cada cliente tem `fullScopeAllowed` falso e recebe só os escopos listados.
+
+- **Base:** "A identidade autenticada deve determinar o `providerId` autorizado. Provedores acessam apenas suas próprias transações, inclusive em replays; operações de carteira são restritas ao serviço interno."
+
+### 10.4. Isolamento entre provedores
+
+| Situação | Resposta | Por quê |
+| --- | --- | --- |
+| corpo de `POST /wagering/transactions` com `providerId` de outro provedor | `403` `PROVIDER_MISMATCH`, antes de qualquer leitura | o erro está na própria requisição |
+| caminho `/providers/{outro}/...` | `403`, antes de qualquer leitura | idem |
+| `GET /wagering/transactions/{id}` de uma transação de outro provedor ou de uma `OPENING` | `404`, igual ao de um identificador inexistente | não revelar que o identificador existe |
+| replay com a chave ou o identificador externo de outro provedor | tratado como operação nova | as duas tuplas de idempotência incluem o provedor (seção 4.2) |
+
+O serviço interno, que tem `wagering:read` e não tem `provider_id`, consulta transações de qualquer provedor e as internas.
+
+A regra está em dois métodos de `app.Caller`: `CanSubmitAs` e `CanReadProvider`.
+
+### 10.5. Segredos
+
+O arquivo do realm não tem valor de segredo: cada cliente declara `"secret": "${VARIAVEL}"`, e o Keycloak troca o marcador pela variável de ambiente ao importar. Os valores vêm do `.env`, que não é versionado (grupo 18).
+
+### 10.6. Acesso à fila
+
+No SQS não há token: o controle é do broker, por credenciais e pela política da fila (grupo 15). O `providerId` de uma mensagem vem do corpo e passa pelas mesmas validações de domínio de uma requisição HTTP.
+
+- **Base:** "O acesso à mensageria deve ser controlado por credenciais e políticas do broker, preservando as validações de domínio no consumidor."
 
 ## 11. Composição com Fx e shutdown
 
@@ -355,7 +563,129 @@ _Pendente (grupo 17 do `tasks.md`)._
 
 ## 12. Contrato HTTP: códigos e corpos de erro
 
-_Pendente (grupo 14 do `tasks.md`)._
+Implementado em `internal/infra/httpapi`, com `net/http` e o `http.ServeMux` da biblioteca padrão. O enunciado trata do assunto na seção 9.
+
+### 12.1. Rotas
+
+| Rota | Escopo |
+| --- | --- |
+| `POST /wallets` | `wallets:write` |
+| `GET /wallets/{walletId}` | `wallets:read` |
+| `GET /wallets/{walletId}/ledger?cursor=...&limit=50` | `wallets:read` |
+| `POST /wallets/{walletId}/reconciliation` | `wallets:read` |
+| `POST /wagering/transactions` | `wagering:write` |
+| `GET /wagering/transactions/{transactionId}` | `wagering:read` |
+| `GET /providers/{providerId}/wagering/transactions/{externalTransactionId}` | `wagering:read` |
+| `GET /health/live`, `GET /health/ready`, `GET /metrics` | públicas |
+
+A tabela de rotas é uma lista no código, com o escopo ao lado de cada rota. Um teste percorre a lista e falha se alguma rota fora das três públicas não tiver escopo, e confere que cada uma responde `401` sem token.
+
+Toda requisição passa, nesta ordem, por: identificador de correlação, recuperação de pânico, prazo de processamento, autenticação com conferência do escopo, e o handler.
+
+### 12.2. Status por situação
+
+| Situação | Status | Corpo |
+| --- | --- | --- |
+| operação processada, ou replay de uma processada | `200` | resultado da transação |
+| carteira criada | `201` | carteira |
+| espera por referência (processamento pendente) | `202` | resultado da transação, com o prazo da espera |
+| entrada inválida | `400` | erro |
+| sem token, ou token inválido | `401` | erro |
+| sem o escopo, ou provedor divergente | `403` | erro |
+| carteira ou transação inexistente, ou de outro provedor | `404` | erro |
+| conflito de idempotência, ou carteira duplicada | `409` | erro |
+| rejeição de negócio | `422` | resultado da transação, com o `failureCode` |
+| erro inesperado | `500` | erro |
+| indisponibilidade transitória | `503`, com `Retry-After` | erro |
+
+- **Replay mantém o status:** o reenvio de uma operação rejeitada responde `422` de novo, com `idempotentReplay: true`; o de uma pendente, `202`.
+- **Por quê `422` e não `409` para rejeição:** conflito é sobre a requisição (chave reutilizada); rejeição é o resultado definitivo de uma operação bem formada. Os dois precisam ser distinguíveis.
+- **Transação `FAILED`:** só aparece em replay ou consulta de uma pendência que falhou; o envio responde `500` com o resultado da transação.
+- **Base:** "Documente os códigos HTTP e os corpos de resposta para entrada inválida, conflito, rejeição de negócio, processamento pendente e indisponibilidade transitória. Essas situações precisam ser distinguíveis pelo contrato."
+
+### 12.3. Corpo de erro
+
+Os erros usam `application/problem+json` (RFC 9457), com exatamente cinco campos. O `code` é estável e é o que o cliente deve usar para decidir; o corpo nunca traz mensagem interna, valor financeiro nem dado de outra carteira.
+
+```json
+{
+  "type": "about:blank",
+  "title": "Conflict",
+  "status": 409,
+  "code": "IDEMPOTENCY_KEY_REUSED",
+  "correlationId": "0192f2a0-5b7c-7c11-9d0e-3f1a2b4c5d6e"
+}
+```
+
+| Situação | Status | `code` |
+| --- | --- | --- |
+| entrada inválida | `400` | os códigos da seção 13.2, por exemplo `INVALID_MONEY` |
+| conflito | `409` | `IDEMPOTENCY_KEY_REUSED`, `TRANSACTION_ALREADY_REGISTERED`, `WALLET_ALREADY_EXISTS` |
+| indisponibilidade transitória | `503` | `SERVICE_UNAVAILABLE` |
+| acesso | `401`, `403` | `UNAUTHORIZED`, `INSUFFICIENT_SCOPE`, `PROVIDER_MISMATCH` |
+| não encontrado | `404` | `WALLET_NOT_FOUND`, `TRANSACTION_NOT_FOUND`, `NOT_FOUND` (rota) |
+| método não permitido | `405` | `METHOD_NOT_ALLOWED` |
+| erro inesperado | `500` | `INTERNAL_ERROR` |
+
+### 12.4. Corpo do resultado de uma operação
+
+Usado em `200`, `202` e `422`. Campos ausentes são omitidos.
+
+Operação processada (`200`):
+
+```json
+{
+  "transactionId": "0192f298-345e-7e38-af88-e43f851a819d",
+  "status": "PROCESSED",
+  "balance": { "amount": "975.00", "currency": "BRL" },
+  "idempotentReplay": false
+}
+```
+
+Processamento pendente (`202`):
+
+```json
+{
+  "transactionId": "0192f298-345e-7e38-af88-e43f851a819d",
+  "status": "PENDING_REFERENCE",
+  "referenceExpiresAt": "2026-01-01T12:05:00Z",
+  "idempotentReplay": false
+}
+```
+
+Rejeição de negócio (`422`):
+
+```json
+{
+  "transactionId": "0192f298-345e-7e38-af88-e43f851a819d",
+  "status": "REJECTED",
+  "failureCode": "INSUFFICIENT_FUNDS",
+  "idempotentReplay": false
+}
+```
+
+O `balance` é o saldo observado no processamento original, e é o mesmo no replay. Uma rejeição não traz `balance`.
+
+### 12.5. Validação da entrada
+
+- O corpo é lido com limite de tamanho e recusa campo desconhecido e conteúdo depois do JSON: `MALFORMED_REQUEST`.
+- Campo obrigatório ausente: `MALFORMED_REQUEST`. Identificador malformado: `INVALID_IDENTIFIER`.
+- `money.amount` tem de ser string no formato da seção 1.3; número JSON, `"25"`, valor negativo ou moeda desconhecida dão `INVALID_MONEY`.
+- `Idempotency-Key` ausente ou vazio: `MISSING_IDEMPOTENCY_KEY`. A chave é usada exatamente como chegou.
+- `kind` desconhecido: `UNSUPPORTED_KIND`. `OPENING` também, recusado pelo domínio.
+
+Nada disso grava no banco, e a mesma operação pode ser reenviada depois de corrigida.
+
+### 12.6. Correlação e prazo
+
+- **`X-Correlation-Id`:** aceito quando tem de 1 a 128 caracteres visíveis; caso contrário um novo é gerado. É devolvido no header da resposta, incluído no corpo de erro, em toda linha de log da requisição e no `correlationId` dos eventos.
+- **Prazo:** cada requisição tem um prazo de processamento. Se ele vence, ou se o cliente desconecta, o contexto é cancelado, a transação SQL é desfeita e a resposta é `503`. Nada fica gravado pela metade.
+
+### 12.7. Leituras
+
+- **Ledger:** em ordem crescente da versão da carteira, `limit` de 1 a 200 (padrão 50). O `nextCursor` é opaco (a última versão vista, em base64) e só aparece quando há mais páginas. Como a ordem é pela versão, um lançamento criado durante a navegação aparece nas páginas seguintes e nenhum é repetido.
+- **Transação:** devolve identificadores, tipo, valor, estado, `failureCode`, saldo resultante, prazo da espera e instantes de criação e conclusão, quando existem.
+- **Base:** "A paginação do ledger deve usar cursor opaco e ordenação estável. As consultas de transação devem permitir acompanhar pendências e consultar códigos de rejeição ou falha."
 
 ## 13. Códigos de falha (`failureCode`)
 
@@ -416,7 +746,59 @@ Este grupo entrega só os códigos e os tipos de erro. As regras que produzem ca
 
 ## 14. Observabilidade
 
-_Pendente (grupo 12 do `tasks.md`)._
+Implementado em `internal/infra/observability`. O enunciado trata do assunto na seção 12. A rota `/metrics` e as de saúde são montadas no grupo 14 do `tasks.md`; a ligação com o PostgreSQL e o SQS é do grupo 17.
+
+### 14.1. Logs
+
+Logs em JSON, uma linha por registro, com `log/slog` da biblioteca padrão. Cada linha tem `time` (UTC, RFC 3339), `level` e `msg`.
+
+| Campo | Quem o coloca |
+| --- | --- |
+| `correlationId` | o middleware HTTP ou o consumidor SQS guardam no `context.Context`; o logger acrescenta a toda linha escrita com esse contexto |
+| `messageId` | o consumidor SQS, do mesmo jeito |
+| `transactionId`, `walletId`, `providerId` | o caso de uso, na linha que conclui a operação |
+
+O que nunca é logado:
+
+- valores monetários: valor da operação, saldo, diferença de reconciliação;
+- o corpo de requisições, mensagens ou eventos;
+- tokens e credenciais. Segredos de configuração usam o tipo `Secret`, que escreve `[REDACTED]` em `String`, `%v`, `%+v`, `%#v`, JSON e `slog`; o valor só sai por `Reveal()`, chamado onde a conexão é aberta.
+
+Os testes conferem isso: o do caso de uso processa uma aposta, um replay e uma rejeição e procura os valores nas linhas de log; `logtest.AssertNoLeak` faz a mesma checagem nos testes de integração.
+
+- **Base:** "Produza logs JSON com os identificadores disponíveis para rastrear a operação: `correlationId`, `messageId`, `transactionId`, `walletId` e `providerId`. Não registre credenciais, dados sensíveis ou payloads financeiros completos."
+
+### 14.2. Métricas
+
+Formato Prometheus, com `prometheus/client_golang`, expostas em `GET /metrics`. A camada de aplicação conhece só a interface `app.Metrics`.
+
+| Métrica | Tipo | Rótulos | O que o enunciado pede |
+| --- | --- | --- | --- |
+| `wager_transactions_total` | contador | `channel`, `kind`, `status`, `failure_code` | resultados por status |
+| `duplicates_total` | contador | `source` (`replay`, `inbox`) | duplicatas |
+| `retries_total` | contador | `component` | retries |
+| `dlq_messages_total` | contador | `reason` | DLQ |
+| `concurrency_conflicts_total` | contador | `type` (`unique_violation`, `lock_timeout`) | conflitos de concorrência |
+| `outbox_lag_seconds` | medidor | | atraso da outbox |
+| `processing_duration_seconds` | histograma | `channel` | latência de processamento |
+| `reconciliation_divergences_total` | contador | | divergências de reconciliação |
+
+Os rótulos vêm só de conjuntos fechados: canal, tipo, estado, código de falha, componente. Nenhum identificador de carteira, jogador, transação ou provedor e nenhum valor monetário vira rótulo.
+
+Um replay conta em `duplicates_total` e não em `wager_transactions_total`. Uma transação `FAILED` aparece em `wager_transactions_total` com `status="FAILED"`.
+
+- **Base:** "Exponha métricas para resultados por status, duplicatas, retries, DLQ, conflitos de concorrência, atraso da outbox, latência de processamento e divergências de reconciliação."
+
+### 14.3. Saúde
+
+| Rota | Resposta |
+| --- | --- |
+| `GET /health/live` | `200` enquanto o processo estiver de pé; não consulta nenhuma dependência |
+| `GET /health/ready` | `200` quando todas as checagens passam; `503` com o nome das que falharam; `503` durante o encerramento |
+
+A resposta de readiness traz só o nome da dependência (`postgres`, `sqs`), nunca o erro de conexão.
+
+- **Base:** "Liveness do processo e readiness de PostgreSQL e SQS."
 
 ## 15. Limitações, interpretações adotadas e trabalho não concluído
 
@@ -619,6 +1001,8 @@ Um segundo teste alimenta as regras com imports inventados, um permitido e um pr
 | `InboxStore` | `Register` diz se a mensagem é nova, repetida ou repetida com outro conteúdo; `Complete` marca a conclusão. As duas rodam na transação do tratamento |
 | `Clock` | o instante atual, para que os testes controlem o tempo |
 | `Metrics` | contadores e medidas, com rótulos de conjuntos fechados |
+
+Os casos de uso são métodos de um único tipo, `app.Service`, que recebe as portas como campos. Eles compartilham quase todas as dependências; um tipo por caso de uso só acrescentaria montagem.
 
 Toda busca que não encontra devolve `app.ErrNotFound`. Falhas passageiras da infraestrutura chegam como `app.ErrTransient`.
 
