@@ -1,0 +1,9 @@
+.git
+.env
+.env.local
+.claude
+openspec
+docs
+test
+bin
+*.md

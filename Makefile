@@ -1,6 +1,7 @@
-DATABASE_URL ?= postgres://wallet:wallet@localhost:5432/wallet?sslmode=disable
+-include .env
+export
 
-.PHONY: fmt vet nofloat test race integration e2e migrate-up migrate-down
+.PHONY: fmt vet nofloat test race integration e2e up down migrate-up migrate-down
 
 fmt:
 	gofmt -l -w .
@@ -10,6 +11,8 @@ nofloat:
 
 vet:
 	go vet ./...
+	go vet -tags=integration ./...
+	go vet -tags=e2e ./...
 
 test:
 	go test ./...
@@ -21,10 +24,17 @@ integration:
 	go test -race -tags=integration ./...
 
 e2e:
-	go test -tags=e2e ./...
+	PENDING_REFERENCE_TTL=20s docker compose up --build --wait
+	go test -count=1 -timeout=20m -tags=e2e ./test/e2e/...
+
+up:
+	docker compose up --build --wait
+
+down:
+	docker compose down --volumes
 
 migrate-up:
-	migrate -path migrations -database "$(DATABASE_URL)" up
+	docker compose run --rm migrations
 
 migrate-down:
-	migrate -path migrations -database "$(DATABASE_URL)" down 1
+	docker compose run --rm migrations -path=/migrations -database="$(DATABASE_URL)" down 1

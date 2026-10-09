@@ -1,0 +1,115 @@
+x-wallet: &wallet
+  build: .
+  image: wallet-wagering-service:local
+  restart: unless-stopped
+  environment:
+    DATABASE_URL: ${DATABASE_URL:?}
+    DB_MAX_CONNS: ${DB_MAX_CONNS:-10}
+    DB_LOCK_TIMEOUT: ${DB_LOCK_TIMEOUT:-5s}
+    HTTP_REQUEST_TIMEOUT: ${HTTP_REQUEST_TIMEOUT:-10s}
+    OIDC_ISSUER_URL: ${OIDC_ISSUER_URL:?}
+    OIDC_KEYS_URL: ${OIDC_KEYS_URL:?}
+    OIDC_AUDIENCE: ${OIDC_AUDIENCE:?}
+    SQS_ENDPOINT: ${SQS_ENDPOINT:?}
+    AWS_REGION: ${AWS_REGION:?}
+    AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:?}
+    AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:?}
+    PENDING_REFERENCE_TTL: ${PENDING_REFERENCE_TTL:-5m}
+    SHUTDOWN_TIMEOUT: ${SHUTDOWN_TIMEOUT:-25s}
+    LOG_LEVEL: ${LOG_LEVEL:-info}
+  stop_grace_period: 30s
+  depends_on:
+    migrations:
+      condition: service_completed_successfully
+    queues:
+      condition: service_completed_successfully
+    keycloak:
+      condition: service_healthy
+  healthcheck:
+    test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8080/health/ready"]
+    interval: 5s
+    timeout: 3s
+    retries: 12
+
+services:
+  postgres:
+    image: postgres:17.6-alpine
+    environment:
+      POSTGRES_USER: wallet
+      POSTGRES_DB: wallet
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?}
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U wallet -d wallet"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  keycloak:
+    image: quay.io/keycloak/keycloak:26.7.5
+    command: ["start-dev", "--import-realm"]
+    environment:
+      KC_BOOTSTRAP_ADMIN_USERNAME: ${KEYCLOAK_ADMIN_USERNAME:?}
+      KC_BOOTSTRAP_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD:?}
+      KC_HOSTNAME: http://keycloak:8080
+      KC_HEALTH_ENABLED: "true"
+      KEYCLOAK_INTERNAL_CLIENT_SECRET: ${KEYCLOAK_INTERNAL_CLIENT_SECRET:?}
+      KEYCLOAK_PROVIDER_A_CLIENT_SECRET: ${KEYCLOAK_PROVIDER_A_CLIENT_SECRET:?}
+      KEYCLOAK_PROVIDER_B_CLIENT_SECRET: ${KEYCLOAK_PROVIDER_B_CLIENT_SECRET:?}
+    volumes:
+      - ./deploy/keycloak/wallet-realm.json:/opt/keycloak/data/import/wallet-realm.json:ro
+    ports:
+      - "8090:8080"
+    healthcheck:
+      test: ["CMD-SHELL", "exec 3<>/dev/tcp/127.0.0.1/9000 && printf 'GET /health/ready HTTP/1.1\\r\\nHost: localhost\\r\\nConnection: close\\r\\n\\r\\n' >&3 && grep -q '200 OK' <&3"]
+      interval: 5s
+      timeout: 5s
+      retries: 40
+
+  ministack:
+    image: ministackorg/ministack:1.5.23
+    ports:
+      - "4566:4566"
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:4566/_ministack/health')"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  migrations:
+    image: migrate/migrate:v4.19.0
+    command: ["-path=/migrations", "-database=${DATABASE_URL:?}", "up"]
+    volumes:
+      - ./migrations:/migrations:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  queues:
+    build: .
+    image: wallet-wagering-service:local
+    entrypoint: ["/app/queues"]
+    environment:
+      SQS_ENDPOINT: ${SQS_ENDPOINT:?}
+      AWS_REGION: ${AWS_REGION:?}
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:?}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:?}
+    depends_on:
+      ministack:
+        condition: service_healthy
+
+  wallet-1:
+    <<: *wallet
+    ports:
+      - "8081:8080"
+
+  wallet-2:
+    <<: *wallet
+    ports:
+      - "8082:8080"
+
+  wallet-3:
+    <<: *wallet
+    ports:
+      - "8083:8080"
