@@ -28,26 +28,26 @@ func (raw RawOperation) Input() (SubmitInput, error) {
 	in.Money = *raw.Money
 
 	var err error
-	if in.External.ProviderID, err = requiredID(ids.ParseProviderID, raw.ProviderID); err != nil {
+	if in.External.ProviderID, err = ParseRequired(ids.ParseProviderID, raw.ProviderID); err != nil {
 		return in, err
 	}
-	if in.External.ExternalID, err = requiredID(ids.ParseExternalTransactionID, raw.ExternalTransactionID); err != nil {
+	if in.External.ExternalID, err = ParseRequired(ids.ParseExternalTransactionID, raw.ExternalTransactionID); err != nil {
 		return in, err
 	}
-	if in.PlayerID, err = requiredID(ids.ParsePlayerID, raw.PlayerID); err != nil {
+	if in.PlayerID, err = ParseRequired(ids.ParsePlayerID, raw.PlayerID); err != nil {
 		return in, err
 	}
-	if in.WalletID, err = requiredID(ids.ParseWalletID, raw.WalletID); err != nil {
+	if in.WalletID, err = ParseRequired(ids.ParseWalletID, raw.WalletID); err != nil {
 		return in, err
 	}
-	if in.External.RoundID, err = requiredID(ids.ParseRoundID, raw.RoundID); err != nil {
+	if in.External.RoundID, err = ParseRequired(ids.ParseRoundID, raw.RoundID); err != nil {
 		return in, err
 	}
-	if in.External.GameID, err = requiredID(ids.ParseGameID, raw.GameID); err != nil {
+	if in.External.GameID, err = ParseRequired(ids.ParseGameID, raw.GameID); err != nil {
 		return in, err
 	}
 	if raw.ReferenceExternalTransactionID != "" {
-		if in.External.ReferenceExternalID, err = requiredID(ids.ParseExternalTransactionID, raw.ReferenceExternalTransactionID); err != nil {
+		if in.External.ReferenceExternalID, err = ParseRequired(ids.ParseExternalTransactionID, raw.ReferenceExternalTransactionID); err != nil {
 			return in, err
 		}
 	}
@@ -57,13 +57,13 @@ func (raw RawOperation) Input() (SubmitInput, error) {
 	if raw.IdempotencyKey == "" {
 		return in, failure.InvalidInputError{Code: failure.MissingIdempotencyKey}
 	}
-	if in.External.IdempotencyKey, err = requiredID(ids.ParseIdempotencyKey, raw.IdempotencyKey); err != nil {
+	if in.External.IdempotencyKey, err = ParseRequired(ids.ParseIdempotencyKey, raw.IdempotencyKey); err != nil {
 		return in, err
 	}
 	return in, nil
 }
 
-func requiredID[T any](parse func(string) (T, error), value string) (T, error) {
+func ParseRequired[T any](parse func(string) (T, error), value string) (T, error) {
 	if value == "" {
 		var none T
 		return none, failure.InvalidInputError{Code: failure.MalformedRequest}

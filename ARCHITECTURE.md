@@ -464,15 +464,189 @@ Cada tentativa trava a carteira, relê a pendência com lock, confere que ela ai
 
 ### 7.3. Worker
 
-_Pendente (grupo 16 do `tasks.md`)._
+O worker de referências é um laço em `internal/worker`: a cada intervalo chama `ResolveDuePendingReferences`, que lista as pendências vencidas e tenta cada uma na sua própria transação. Uma pendência que falha não impede as outras do mesmo ciclo.
+
+Os dois workers (este e o publicador da outbox) usam o mesmo laço:
+
+| Comportamento | Como |
+| --- | --- |
+| prazo por ciclo | cada ciclo roda com um contexto de prazo próprio |
+| lote cheio | o ciclo seguinte começa na hora, sem esperar o intervalo |
+| ciclo com erro | o erro é registrado em log e o laço continua |
+| encerramento | o cancelamento do contexto interrompe a espera e o ciclo em andamento; `Run` retorna e registra em log que parou |
+
+Um teste com PostgreSQL real roda o worker com prazo de espera de 2 segundos sobre um `REFUND` cuja referência nunca chega: a transação termina `REJECTED` com `REFERENCE_NOT_FOUND` e o evento de rejeição aparece na outbox. O worker desse teste usa uma instância do serviço diferente da que registrou a pendência, como aconteceria depois de um reinício.
 
 ## 8. Inbox e consumidor SQS
 
-_Pendente (grupo 15 do `tasks.md`)._
+Implementado em `internal/infra/sqs` (cliente, filas, consumidor) e em `internal/infra/postgres` (inbox). O enunciado trata do assunto nas seções 6.5 e 10.
+
+### 8.1. Filas
+
+| Fila | Papel | Configuração |
+| --- | --- | --- |
+| `wager-transactions.fifo` | entrada de operações | visibility timeout de 30 s; redrive para a DLQ depois de 5 recebimentos |
+| `wager-transactions-dlq.fifo` | mensagens que não puderam ser processadas | |
+| `wallet-events.fifo` | saída de eventos (seção 9) | mesma configuração da de entrada |
+| `wallet-events-dlq.fifo` | DLQ dos eventos | |
+
+As quatro são criadas por `sqs.EnsureQueues`, que pode ser executada quantas vezes for preciso: criar uma fila que já existe com os mesmos atributos não muda nada. Um teste a executa duas vezes contra o MiniStack e confere os atributos. No Compose ela roda num job antes do serviço (grupo 18 do `tasks.md`).
+
+- **Mudança em relação ao plano:** o plano previa um script de shell em `deploy/ministack/`. O provisionamento ficou em Go porque assim é testado com o mesmo cliente e contra o mesmo broker dos demais testes, sem depender de uma ferramenta de linha de comando dentro de um container.
+- **Base:** "Provisione as filas `wager-transactions.fifo` e `wager-transactions-dlq.fifo`, incluindo a configuração de redrive."
+
+### 8.2. Mensagem de entrada
+
+O corpo é um envelope com `messageId`, `type` igual a `WagerTransactionRequested`, `occurredAt` e `data`. Em `data` vão os mesmos campos da requisição HTTP mais `idempotencyKey`. A leitura recusa campo desconhecido, no envelope e em `data`.
+
+Os campos de `data` passam pela mesma conversão do HTTP (`app.RawOperation`) e chegam ao mesmo caso de uso. A mesma operação enviada pelos dois canais gera o mesmo hash de conteúdo, e a segunda é reconhecida como replay.
+
+| Dado | De onde vem na fila |
+| --- | --- |
+| chave de idempotência | `data.idempotencyKey` |
+| `correlationId` | atributo `correlationId` da mensagem; se não houver, o `messageId` |
+| `causationId` dos eventos | o `messageId` |
+
+Contrato do produtor: `MessageGroupId` igual ao `walletId` e `MessageDeduplicationId` igual ao `messageId`. A correção não depende disso: se o produtor usar outro grupo, duas mensagens da mesma carteira podem ser consumidas ao mesmo tempo e o lock da carteira as põe em fila; se repetir a mensagem depois da janela de deduplicação do FIFO, a inbox e a idempotência a reconhecem.
+
+- **Base:** "HTTP e SQS devem compartilhar o caso de uso e as garantias de idempotência financeira. Na entrada por SQS, a chave é `data.idempotencyKey`, com deduplicação adicional pela inbox." e "Documente `MessageGroupId` e `MessageDeduplicationId`".
+
+### 8.3. Tratamento de uma mensagem
+
+```
+recebe -> lê o envelope
+  inválido ----------------------------------> DLQ com o motivo, apaga da origem
+BEGIN
+  INSERT inbox (consumidor, messageId, hash do corpo) ... ON CONFLICT DO NOTHING
+    já registrada, mesmo hash --------------> COMMIT, apaga (duplicata)
+    já registrada, outro hash --------------> ROLLBACK, DLQ, apaga
+  caso de uso (num SAVEPOINT da mesma transação)
+    entrada inválida ou conflito -----------> ROLLBACK, DLQ, apaga
+    PROCESSED | REJECTED | PENDING_REFERENCE
+  UPDATE inbox SET completed_at
+COMMIT
+apaga a mensagem
+erro transitório ou inesperado -------------> ROLLBACK, adia a visibilidade
+```
+
+| Regra | Como é cumprida |
+| --- | --- |
+| inbox, domínio, ledger e eventos no mesmo commit | o registro da inbox, o caso de uso e a conclusão rodam na mesma transação SQL; se qualquer parte falha, nada é confirmado |
+| a mensagem só sai da fila depois do commit | o `DeleteMessage` é a última chamada, depois de `Tx.Run` devolver sucesso |
+| reentrega de mensagem já tratada | a inbox tem a linha com o mesmo hash: nada é reexecutado, a duplicata é contada em métrica e a mensagem é apagada |
+| mesmo `messageId` com outro corpo | o hash difere: erro permanente, vai para a DLQ sem executar |
+| rejeição de negócio | a transação `REJECTED` é gravada e a mensagem é apagada; não vai para a DLQ |
+| referência pendente | a transação `PENDING_REFERENCE` e a conclusão da inbox são confirmadas juntas e a mensagem é apagada; o worker de referências assume |
+
+- **Hash da inbox:** SHA-256 do corpo bruto da mensagem. É diferente do hash de conteúdo da seção 4.1, que cobre só os campos de negócio.
+- **Identidade:** `(consumer_name, message_id)`, única no banco; o consumidor se chama `wager-transactions-consumer`.
+- **Base:** "Use o `messageId` do envelope como identidade durável da mensagem para o consumidor e verifique seu hash em reentregas.", "Remova a mensagem da fila somente após o commit do seu tratamento durável." e "Rejeições de negócio confirmadas são terminais e permitem a remoção da mensagem."
+
+### 8.4. Mensagens inválidas
+
+Uma mensagem que nunca vai virar operação é enviada pelo próprio consumidor à DLQ, com o motivo no atributo `reason`, e apagada da origem no primeiro recebimento. Não se espera o redrive.
+
+| Motivo (`reason`) | Situação |
+| --- | --- |
+| `INVALID_MESSAGE` | corpo que não é JSON, envelope incompleto ou com campo desconhecido |
+| `UNKNOWN_MESSAGE_TYPE` | `type` diferente de `WagerTransactionRequested` |
+| `MESSAGE_ID_REUSED` | `messageId` já registrado com outro corpo |
+| um código da seção 13.2 | entrada inválida de domínio: `UNSUPPORTED_KIND` (inclui `OPENING`), `INVALID_AMOUNT_FOR_KIND`, `WALLET_NOT_FOUND` e os demais |
+| `IDEMPOTENCY_KEY_REUSED`, `TRANSACTION_ALREADY_REGISTERED` | conflito de idempotência |
+| `RETRIES_EXHAUSTED` | só na métrica: a mensagem chegou ao quinto recebimento com falha e vai para a DLQ pelo redrive |
+
+- **Por quê não esperar o redrive:** numa fila FIFO a mensagem inválida seguraria todas as seguintes da mesma carteira por cinco recebimentos. Com o envio direto, a mensagem válida que vem atrás é processada em seguida.
+- **Limitação:** o envio à DLQ e a remoção da origem são duas chamadas. Se o processo morrer entre elas, a mensagem é reentregue e vai à DLQ de novo; a deduplicação do FIFO descarta a cópia dentro de cinco minutos.
+- **Base:** "erros permanentes ou tentativas esgotadas devem chegar à DLQ" e "Documente limites de tentativas, visibility timeout e tratamento de mensagens inválidas."
+
+### 8.5. Falhas transitórias
+
+Quando o tratamento falha por erro transitório ou inesperado, a mensagem não é apagada. O consumidor muda a visibilidade dela para adiar a reentrega, com atraso que dobra a cada recebimento (o atraso inicial é configurável, e o teto é de 60 segundos). No quinto recebimento com falha a visibilidade é zerada, e a entrega seguinte é o redrive do broker para a DLQ.
+
+| Parâmetro | Valor |
+| --- | --- |
+| visibility timeout da fila | 30 s |
+| recebimentos até a DLQ | 5 |
+| long polling | 20 s por padrão |
+| mensagens por lote | até 10, tratadas em paralelo |
+
+- **Base:** "Falhas transitórias exigem retry com backoff".
+
+### 8.6. Encerramento
+
+Ao receber o cancelamento, o consumidor para de buscar mensagens. As que já estão em tratamento continuam com um contexto próprio, limitado pelo prazo de tratamento, e são concluídas e apagadas. Uma mensagem cujo tratamento falha durante o encerramento tem a visibilidade zerada, para que outra instância a pegue na hora. `Run` só retorna depois que o lote em andamento termina, e registra em log que parou.
+
+- **Base:** "Em `SIGTERM`, pare de buscar trabalho e conclua o processamento em andamento dentro do prazo, ou libere sua visibilidade para reentrega segura."
+
+### 8.7. Demonstração
+
+Testes com PostgreSQL e MiniStack reais, em `test/integration`:
+
+| Cenário | Resultado conferido |
+| --- | --- |
+| o consumidor confirma a transação e morre antes de apagar a mensagem | a reentrega é reconhecida pela inbox, a mensagem é apagada, e saldo, ledger e outbox não mudam |
+| mesmo `messageId` com outro corpo; `OPENING`; e uma mensagem válida da mesma carteira logo atrás | as duas primeiras vão à DLQ com o motivo; a válida é processada sem esperar |
+| banco inacessível e depois acessível | a mensagem fica na fila, o retry é contado, e ela é processada uma única vez depois da volta |
+| banco inacessível o tempo todo | a mensagem chega à DLQ depois de 5 recebimentos, sem nenhum efeito financeiro |
 
 ## 9. Outbox e publicação de eventos
 
-_Pendente (grupo 16 do `tasks.md`)._
+Implementado em `internal/worker` (ciclo de publicação), `internal/infra/postgres` (tabela `outbox`) e `internal/infra/sqs` (envio). O contrato dos eventos está na seção 19. O enunciado trata do assunto na seção 11.
+
+### 9.1. Do commit à publicação
+
+1. O caso de uso grava os eventos na tabela `outbox` dentro da mesma transação SQL da mudança (seção 3.1). Se a transação é desfeita, os eventos não existem.
+2. Um worker separado, o publicador, consulta a outbox, reserva um lote, envia cada evento ao SQS e marca o que foi enviado.
+3. Nenhum caso de uso fala com o SQS. Um evento só pode ser publicado depois do commit, porque antes disso o publicador não o enxerga.
+
+- **Base:** "Eventos externos só podem ser publicados depois da confirmação da transação que os originou." e "Um worker separado publica os registros pendentes da outbox."
+
+### 9.2. Vários publicadores
+
+A reserva é um único comando SQL: escolhe os registros pendentes e vencidos com `FOR UPDATE SKIP LOCKED` e grava neles `locked_until = agora + prazo`. O prazo da reserva é de 30 segundos por padrão.
+
+| Situação | Comportamento |
+| --- | --- |
+| dois publicadores ao mesmo tempo | cada um pula as linhas que o outro travou; nenhum espera e nenhum registro é reservado pelos dois |
+| publicação com sucesso | grava `published_at` |
+| publicação com falha | grava a tentativa e o erro, e reagenda: 1 s, 2 s, 4 s, até o teto de 60 s |
+| publicador morre depois do commit da operação e antes de publicar | o evento continua pendente e outro publicador o envia |
+| publicador morre depois de publicar e antes de marcar | a reserva vence e outro publicador republica, com o mesmo `eventId` |
+| SQS fora do ar | os eventos ficam pendentes, com as tentativas contadas, e saem quando o SQS volta; as operações continuam sendo processadas |
+
+- **Sem descarte:** não há limite de tentativas. Um evento cujo registro foi confirmado no banco nunca é abandonado.
+- **Fora de transação:** o envio ao SQS acontece sem transação SQL aberta, para que um SQS lento não segure conexões do banco.
+- **Base:** "Ele deve suportar múltiplos publishers, disputa por registros, backoff e recuperação de trabalho abandonado." e "Demonstre recuperação após interrupção entre commit e publicação e entre publicação e confirmação na outbox. Eventos pendentes devem ser assumidos por outra instância; republicações devem preservar o `eventId`."
+
+### 9.3. Roteamento e consumo
+
+| Item | Valor |
+| --- | --- |
+| destino | `wallet-events.fifo`, com `wallet-events-dlq.fifo` |
+| `MessageGroupId` | o identificador da carteira do evento |
+| `MessageDeduplicationId` | o `eventId` |
+| corpo | o JSON do evento (seção 19.3) |
+
+Contrato para quem consome:
+
+- **A entrega é at-least-once.** O mesmo evento pode chegar mais de uma vez, sempre com o mesmo `eventId` e o mesmo conteúdo. O consumidor deve descartar repetições pelo `eventId`. A deduplicação do FIFO ajuda, mas só vale por cinco minutos.
+- **A ordem entre eventos da mesma carteira não é garantida** quando há mais de um publicador. Quem precisa de ordem usa o `walletVersion` de `WalletBalanceChanged`.
+- **O payload é um snapshot.** O banco impede a alteração das colunas do evento depois de gravado (seção 2.4).
+- **Base:** "Provisione o destino dos eventos de saída e documente seus contratos de roteamento e consumo."
+
+### 9.4. Atraso da outbox
+
+A cada ciclo o publicador mede a idade do evento pendente mais antigo e a publica na métrica `outbox_lag_seconds`; sem pendentes, vale zero.
+
+### 9.5. Demonstração
+
+Testes com PostgreSQL e MiniStack reais, em `test/integration`:
+
+| Cenário | Resultado conferido |
+| --- | --- |
+| dois publicadores sobre 100 eventos pendentes | os 100 chegam à fila e cada um foi enviado uma única vez |
+| o publicador envia e morre antes de marcar | durante a reserva ninguém pega os eventos; vencida a reserva, outro publicador republica com o mesmo `eventId` e o mesmo corpo |
+| SQS inacessível e depois acessível | as tentativas ficam registradas, uma operação nova é processada no meio, e os quatro eventos saem depois da volta |
 
 ## 10. Autenticação e autorização
 
@@ -603,7 +777,7 @@ Toda requisição passa, nesta ordem, por: identificador de correlação, recupe
 
 - **Replay mantém o status:** o reenvio de uma operação rejeitada responde `422` de novo, com `idempotentReplay: true`; o de uma pendente, `202`.
 - **Por quê `422` e não `409` para rejeição:** conflito é sobre a requisição (chave reutilizada); rejeição é o resultado definitivo de uma operação bem formada. Os dois precisam ser distinguíveis.
-- **Transação `FAILED`:** só aparece em replay ou consulta de uma pendência que falhou; o envio responde `500` com o resultado da transação.
+- **Transação `FAILED`:** só aparece em replay ou consulta de uma pendência que falhou; o envio responde `500` com o resultado da transação. O resultado é terminal: reenviar a mesma chave devolve sempre a mesma resposta.
 - **Base:** "Documente os códigos HTTP e os corpos de resposta para entrada inválida, conflito, rejeição de negócio, processamento pendente e indisponibilidade transitória. Essas situações precisam ser distinguíveis pelo contrato."
 
 ### 12.3. Corpo de erro
@@ -616,6 +790,30 @@ Os erros usam `application/problem+json` (RFC 9457), com exatamente cinco campos
   "title": "Conflict",
   "status": 409,
   "code": "IDEMPOTENCY_KEY_REUSED",
+  "correlationId": "0192f2a0-5b7c-7c11-9d0e-3f1a2b4c5d6e"
+}
+```
+
+Entrada inválida (`400`):
+
+```json
+{
+  "type": "about:blank",
+  "title": "Bad Request",
+  "status": 400,
+  "code": "INVALID_MONEY",
+  "correlationId": "0192f2a0-5b7c-7c11-9d0e-3f1a2b4c5d6e"
+}
+```
+
+Indisponibilidade transitória (`503`, com o header `Retry-After: 1`):
+
+```json
+{
+  "type": "about:blank",
+  "title": "Service Unavailable",
+  "status": 503,
+  "code": "SERVICE_UNAVAILABLE",
   "correlationId": "0192f2a0-5b7c-7c11-9d0e-3f1a2b4c5d6e"
 }
 ```
@@ -678,6 +876,10 @@ O `balance` é o saldo observado no processamento original, e é o mesmo no repl
 - `kind` desconhecido: `UNSUPPORTED_KIND`. `OPENING` também, recusado pelo domínio.
 
 Nada disso grava no banco, e a mesma operação pode ser reenviada depois de corrigida.
+
+Limitações herdadas da biblioteca padrão: num corpo com chave repetida vale a última; o nome do campo é aceito em qualquer caixa; o `Content-Type` da requisição não é conferido; e um caminho com `//` ou `..` recebe o redirecionamento do `ServeMux` em vez de um corpo de erro. Nenhuma delas contorna a autenticação nem o hash, que usam sempre o valor já lido.
+
+Num erro `500` o log traz o texto do erro interno, que é o único diagnóstico disponível; as camadas de baixo não põem segredo nem valor monetário nesse texto (seção 2.3). Num pânico o log traz só o caminho da requisição.
 
 ### 12.6. Correlação e prazo
 
