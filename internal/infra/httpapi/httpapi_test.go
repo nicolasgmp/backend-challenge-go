@@ -30,7 +30,6 @@ const (
 	providerAToken = "token-of-provider-a"
 	providerBToken = "token-of-provider-b"
 	internalToken  = "token-of-the-internal-service"
-	idpDownToken   = "token-while-the-idp-is-down"
 
 	betBody = `{"providerId":"provider-a","externalTransactionId":"transaction-123",` +
 		`"playerId":"` + playerUUID + `","walletId":"` + walletUUID + `","roundId":"round-987",` +
@@ -90,9 +89,6 @@ type fakeVerifier struct {
 }
 
 func (v fakeVerifier) Verify(_ context.Context, token string) (app.Caller, error) {
-	if token == idpDownToken {
-		return app.Caller{}, app.ErrIdPUnavailable
-	}
 	caller, known := v.callers[token]
 	if !known {
 		return app.Caller{}, errors.New("signature does not match")
@@ -288,7 +284,6 @@ func TestAuthentication(t *testing.T) {
 		{"another scheme", "Basic dXNlcjpwYXNz", http.StatusUnauthorized, httpapi.CodeUnauthorized},
 		{"empty bearer", "Bearer ", http.StatusUnauthorized, httpapi.CodeUnauthorized},
 		{"invalid token", "Bearer forged", http.StatusUnauthorized, httpapi.CodeUnauthorized},
-		{"identity provider unavailable", "Bearer " + idpDownToken, http.StatusServiceUnavailable, httpapi.CodeServiceUnavailable},
 		{"provider opening a wallet", "Bearer " + providerAToken, http.StatusForbidden, httpapi.CodeInsufficientScope},
 	}
 

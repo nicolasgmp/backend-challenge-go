@@ -179,7 +179,7 @@ func TestOutboxEventIsImmutable(t *testing.T) {
 	refused(t, pool, immutable, `UPDATE outbox SET group_key = 'wallet-2' WHERE event_id = $1`, eventA)
 	refused(t, pool, immutable, `UPDATE outbox SET causation_id = 'message-1' WHERE event_id = $1`, eventA)
 
-	exec(t, pool, `UPDATE outbox SET attempts = attempts + 1, last_error = 'broker down', next_attempt_at = now(), locked_until = now()
+	exec(t, pool, `UPDATE outbox SET attempts = attempts + 1, next_attempt_at = now(), locked_until = now()
 		WHERE event_id = $1`, eventA)
 	exec(t, pool, `UPDATE outbox SET published_at = now() WHERE event_id = $1`, eventA)
 }

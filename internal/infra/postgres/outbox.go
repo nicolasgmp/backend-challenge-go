@@ -82,10 +82,10 @@ func (s *OutboxStore) MarkPublished(ctx context.Context, eventID ids.EventID) er
 	return mapError(err)
 }
 
-func (s *OutboxStore) MarkFailed(ctx context.Context, eventID ids.EventID, nextAttemptAt time.Time, reason string) error {
+func (s *OutboxStore) MarkFailed(ctx context.Context, eventID ids.EventID, nextAttemptAt time.Time) error {
 	_, err := s.pool.Exec(ctx,
-		`UPDATE outbox SET attempts = attempts + 1, next_attempt_at = $2, last_error = $3, locked_until = NULL
-		 WHERE event_id = $1`, eventID.String(), nextAttemptAt, reason)
+		`UPDATE outbox SET attempts = attempts + 1, next_attempt_at = $2, locked_until = NULL
+		 WHERE event_id = $1`, eventID.String(), nextAttemptAt)
 	return mapError(err)
 }
 

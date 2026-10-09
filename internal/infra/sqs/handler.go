@@ -42,17 +42,14 @@ type Handler struct {
 
 var errMessageIDReused = errors.New("sqs: message id reused with another body")
 
-func (h *Handler) Handle(ctx context.Context, body, correlationID string) Outcome {
+func (h *Handler) Handle(ctx context.Context, body string) Outcome {
 	parsed, reason := parseEnvelope(body)
 	if reason != "" {
 		return h.deadLetter(ctx, reason)
 	}
-	if correlationID == "" {
-		correlationID = parsed.MessageID
-	}
-	ctx = observability.WithMessageID(observability.WithCorrelationID(ctx, correlationID), parsed.MessageID)
+	ctx = observability.WithMessageID(observability.WithCorrelationID(ctx, parsed.MessageID), parsed.MessageID)
 
-	in, err := h.input(parsed, correlationID)
+	in, err := h.input(parsed)
 	if err != nil {
 		return h.outcome(ctx, err)
 	}
@@ -82,14 +79,14 @@ func (h *Handler) Handle(ctx context.Context, body, correlationID string) Outcom
 	return h.outcome(ctx, err)
 }
 
-func (h *Handler) input(parsed envelope, correlationID string) (app.SubmitInput, error) {
+func (h *Handler) input(parsed envelope) (app.SubmitInput, error) {
 	raw, err := parsed.operation()
 	if err != nil {
 		return app.SubmitInput{}, failure.InvalidInputError{Code: failure.MalformedRequest}
 	}
 	in, err := raw.Input()
 	in.Channel = app.ChannelSQS
-	in.CorrelationID = correlationID
+	in.CorrelationID = parsed.MessageID
 	in.CausationID = parsed.MessageID
 	return in, err
 }

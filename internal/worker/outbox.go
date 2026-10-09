@@ -10,7 +10,6 @@ import (
 
 const (
 	retryOutbox       = "outbox"
-	publishFailed     = "publish failed"
 	firstPublishDelay = time.Second
 	maxPublishDelay   = 60 * time.Second
 )
@@ -52,7 +51,7 @@ func (p *OutboxPublisher) publish(ctx context.Context, record app.OutboxRecord) 
 		p.Logger.WarnContext(ctx, "event not published",
 			slog.String("eventId", record.EventID.String()), slog.Int("attempts", record.Attempts+1), slog.String("error", err.Error()))
 		nextAttemptAt := p.Clock.Now().Add(PublishDelay(record.Attempts))
-		return p.Outbox.MarkFailed(ctx, record.EventID, nextAttemptAt, publishFailed)
+		return p.Outbox.MarkFailed(ctx, record.EventID, nextAttemptAt)
 	}
 	return p.Outbox.MarkPublished(ctx, record.EventID)
 }

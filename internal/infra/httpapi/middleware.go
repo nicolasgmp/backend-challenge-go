@@ -2,7 +2,6 @@ package httpapi
 
 import (
 	"context"
-	"errors"
 	"log/slog"
 	"net/http"
 	"strings"
@@ -73,10 +72,6 @@ func (a *API) authenticate(scope string, next http.HandlerFunc) http.HandlerFunc
 			return
 		}
 		caller, err := a.deps.Verifier.Verify(r.Context(), token)
-		if errors.Is(err, app.ErrIdPUnavailable) {
-			writeProblem(w, r, http.StatusServiceUnavailable, CodeServiceUnavailable)
-			return
-		}
 		if err != nil {
 			writeProblem(w, r, http.StatusUnauthorized, CodeUnauthorized)
 			return

@@ -4,7 +4,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log/slog"
 	"strings"
 	"testing"
 	"time"
@@ -45,11 +44,11 @@ func TestLoadConfigDefaults(t *testing.T) {
 	if cfg.DatabaseURL.Reveal() != databaseURL || cfg.AWSSecretAccessKey.Reveal() != awsSecret || cfg.OIDCAudience != "wallet-service" {
 		t.Fatal("the required values were not read")
 	}
-	if cfg.DBMaxConns != 10 || cfg.DBLockTimeout != 5*time.Second || cfg.HTTPAddr != ":8080" || cfg.HTTPRequestTimeout != 10*time.Second {
-		t.Fatalf("defaults = %d, %s, %s, %s, want 10, 5s, :8080, 10s", cfg.DBMaxConns, cfg.DBLockTimeout, cfg.HTTPAddr, cfg.HTTPRequestTimeout)
+	if cfg.DBLockTimeout != 5*time.Second || cfg.HTTPAddr != ":8080" {
+		t.Fatalf("defaults = %s, %s, want 5s, :8080", cfg.DBLockTimeout, cfg.HTTPAddr)
 	}
-	if cfg.PendingReferenceTTL != 5*time.Minute || cfg.ShutdownTimeout != 25*time.Second || cfg.LogLevel != slog.LevelInfo {
-		t.Fatalf("defaults = %s, %s, %s, want 5m, 25s, INFO", cfg.PendingReferenceTTL, cfg.ShutdownTimeout, cfg.LogLevel)
+	if cfg.PendingReferenceTTL != 5*time.Minute || cfg.ShutdownTimeout != 25*time.Second {
+		t.Fatalf("defaults = %s, %s, want 5m, 25s", cfg.PendingReferenceTTL, cfg.ShutdownTimeout)
 	}
 
 	for _, printed := range []string{fmt.Sprintf("%v", cfg), fmt.Sprintf("%+v", cfg), fmt.Sprintf("%#v", cfg)} {
@@ -72,14 +71,10 @@ func TestLoadConfigRejects(t *testing.T) {
 		{bootstrap.EnvAWSRegion, ""},
 		{bootstrap.EnvAWSAccessKeyID, ""},
 		{bootstrap.EnvAWSSecretAccessKey, ""},
-		{bootstrap.EnvDBMaxConns, "zero-s3cr3t"},
-		{bootstrap.EnvDBMaxConns, "0"},
 		{bootstrap.EnvDBLockTimeout, "five-s3cr3t"},
 		{bootstrap.EnvDBLockTimeout, "-5s"},
-		{bootstrap.EnvHTTPRequestTimeout, "10"},
 		{bootstrap.EnvPendingReferenceTTL, "0s"},
 		{bootstrap.EnvShutdownTimeout, "soon"},
-		{bootstrap.EnvLogLevel, "loud-s3cr3t"},
 	}
 
 	for _, tt := range tests {

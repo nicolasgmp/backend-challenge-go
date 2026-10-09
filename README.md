@@ -42,10 +42,8 @@ Todas estão no [`.env.example`](.env.example), que traz só valores locais de e
 | Variável | Obrigatória | Padrão | Significado |
 | --- | --- | --- | --- |
 | `DATABASE_URL` | sim | | conexão com o PostgreSQL (segredo) |
-| `DB_MAX_CONNS` | não | `10` | conexões por instância |
 | `DB_LOCK_TIMEOUT` | não | `5s` | espera máxima pelo lock de uma carteira |
 | `HTTP_ADDR` | não | `:8080` | endereço do servidor HTTP |
-| `HTTP_REQUEST_TIMEOUT` | não | `10s` | prazo de processamento de uma requisição |
 | `OIDC_ISSUER_URL` | sim | | emissor esperado nos tokens |
 | `OIDC_KEYS_URL` | sim | | de onde vêm as chaves públicas do realm |
 | `OIDC_AUDIENCE` | sim | | audiência esperada nos tokens |
@@ -54,7 +52,6 @@ Todas estão no [`.env.example`](.env.example), que traz só valores locais de e
 | `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` | sim | | credenciais do broker (segredos) |
 | `PENDING_REFERENCE_TTL` | não | `5m` | quanto uma reversão espera pela operação que referencia |
 | `SHUTDOWN_TIMEOUT` | não | `25s` | prazo para concluir o trabalho em andamento no encerramento |
-| `LOG_LEVEL` | não | `info` | `debug`, `info`, `warn` ou `error` |
 
 As demais variáveis do `.env.example` (`POSTGRES_PASSWORD`, `KEYCLOAK_*`) são usadas só pelo Compose, para criar o banco e os clientes do Keycloak. O Compose recusa subir se faltar alguma delas.
 

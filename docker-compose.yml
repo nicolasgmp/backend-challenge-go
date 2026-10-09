@@ -4,9 +4,7 @@ x-wallet: &wallet
   restart: unless-stopped
   environment:
     DATABASE_URL: ${DATABASE_URL:?}
-    DB_MAX_CONNS: ${DB_MAX_CONNS:-10}
     DB_LOCK_TIMEOUT: ${DB_LOCK_TIMEOUT:-5s}
-    HTTP_REQUEST_TIMEOUT: ${HTTP_REQUEST_TIMEOUT:-10s}
     OIDC_ISSUER_URL: ${OIDC_ISSUER_URL:?}
     OIDC_KEYS_URL: ${OIDC_KEYS_URL:?}
     OIDC_AUDIENCE: ${OIDC_AUDIENCE:?}
@@ -16,7 +14,6 @@ x-wallet: &wallet
     AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:?}
     PENDING_REFERENCE_TTL: ${PENDING_REFERENCE_TTL:-5m}
     SHUTDOWN_TIMEOUT: ${SHUTDOWN_TIMEOUT:-25s}
-    LOG_LEVEL: ${LOG_LEVEL:-info}
   stop_grace_period: 30s
   depends_on:
     migrations:

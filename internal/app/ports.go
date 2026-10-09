@@ -57,7 +57,7 @@ type OutboxStore interface {
 	Insert(ctx context.Context, event events.Event) error
 	Claim(ctx context.Context, limit int, lease time.Duration) ([]OutboxRecord, error)
 	MarkPublished(ctx context.Context, eventID ids.EventID) error
-	MarkFailed(ctx context.Context, eventID ids.EventID, nextAttemptAt time.Time, reason string) error
+	MarkFailed(ctx context.Context, eventID ids.EventID, nextAttemptAt time.Time) error
 	OldestPendingAge(ctx context.Context) (time.Duration, error)
 }
 

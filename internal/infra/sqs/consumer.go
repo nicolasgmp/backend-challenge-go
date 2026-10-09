@@ -15,11 +15,10 @@ import (
 )
 
 const (
-	attributeReason        = "reason"
-	attributeCorrelationID = "correlationId"
-	maxRetryDelay          = 60 * time.Second
-	maxBatch               = 10
-	outcomeTimeout         = 5 * time.Second
+	attributeReason = "reason"
+	maxRetryDelay   = 60 * time.Second
+	maxBatch        = 10
+	outcomeTimeout  = 5 * time.Second
 )
 
 type ConsumerConfig struct {
@@ -65,7 +64,6 @@ func (c *Consumer) receive(ctx context.Context) ([]types.Message, error) {
 		MaxNumberOfMessages:         int32(min(c.cfg.Concurrency, maxBatch)),
 		WaitTimeSeconds:             int32(c.cfg.WaitTime / time.Second),
 		MessageSystemAttributeNames: []types.MessageSystemAttributeName{types.MessageSystemAttributeNameApproximateReceiveCount, types.MessageSystemAttributeNameMessageGroupId},
-		MessageAttributeNames:       []string{attributeCorrelationID},
 	})
 	if err != nil {
 		return nil, err
@@ -88,7 +86,7 @@ func (c *Consumer) process(ctx context.Context, message types.Message) {
 	work, cancel := context.WithTimeout(context.WithoutCancel(ctx), c.cfg.HandleTimeout)
 	defer cancel()
 
-	outcome := c.handler.Handle(work, aws.ToString(message.Body), correlationOf(message))
+	outcome := c.handler.Handle(work, aws.ToString(message.Body))
 
 	apply, cancelApply := context.WithTimeout(context.WithoutCancel(ctx), outcomeTimeout)
 	defer cancelApply()
@@ -163,8 +161,4 @@ func receiveCount(message types.Message) int {
 		return 1
 	}
 	return count
-}
-
-func correlationOf(message types.Message) string {
-	return aws.ToString(message.MessageAttributes[attributeCorrelationID].StringValue)
 }

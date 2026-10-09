@@ -294,11 +294,6 @@ func TestRehydrateRejects(t *testing.T) {
 		{"missing update time", wager.Processed, func(s *wager.State) { s.UpdatedAt = time.Time{} }},
 		{"unknown kind", wager.Processed, func(s *wager.State) { s.Kind = wager.Kind("BONUS") }},
 		{"unknown status", wager.Processed, func(s *wager.State) { s.Status = wager.Status("DONE") }},
-		{"external without provider data", wager.Processed, func(s *wager.State) { s.External = wager.External{} }},
-		{"opening with provider data", wager.Processed, func(s *wager.State) { s.Kind = wager.Opening }},
-		{"rejected without failure code", wager.Rejected, func(s *wager.State) { s.FailureCode = "" }},
-		{"failed without failure code", wager.Failed, func(s *wager.State) { s.FailureCode = "" }},
-		{"processed with failure code", wager.Processed, func(s *wager.State) { s.FailureCode = failure.ReferenceNotFound }},
 	}
 
 	for _, tt := range tests {

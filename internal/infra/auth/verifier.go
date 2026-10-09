@@ -14,8 +14,6 @@ import (
 	"jungle-gaming-challeng/internal/domain/ids"
 )
 
-const keysUnavailableMarker = "fetching keys"
-
 var ErrInvalidToken = errors.New("auth: invalid token")
 
 type Config struct {
@@ -42,20 +40,13 @@ func NewVerifier(ctx context.Context, cfg Config) *Verifier {
 func (v *Verifier) Verify(ctx context.Context, rawToken string) (app.Caller, error) {
 	token, err := v.verifier.Verify(ctx, rawToken)
 	if err != nil {
-		return app.Caller{}, classify(err)
+		return app.Caller{}, ErrInvalidToken
 	}
 	var parsed claims
 	if err := token.Claims(&parsed); err != nil {
 		return app.Caller{}, ErrInvalidToken
 	}
 	return callerFrom(parsed)
-}
-
-func classify(err error) error {
-	if strings.Contains(err.Error(), keysUnavailableMarker) {
-		return fmt.Errorf("%w: signing keys could not be fetched", app.ErrIdPUnavailable)
-	}
-	return ErrInvalidToken
 }
 
 func callerFrom(parsed claims) (app.Caller, error) {

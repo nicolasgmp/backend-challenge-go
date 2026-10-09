@@ -474,24 +474,18 @@ func TestOutboxInsertAndClaim(t *testing.T) {
 		t.Fatalf("claimed %d events after the lease expired, want 1", len(retaken))
 	}
 
-	must(t, db.outbox.MarkFailed(ctx, event.Header().EventID, time.Now().Add(time.Hour), "broker down"))
+	must(t, db.outbox.MarkFailed(ctx, event.Header().EventID, time.Now().Add(time.Hour)))
 	postponed, err := db.outbox.Claim(ctx, 10, time.Minute)
 	must(t, err)
 	if len(postponed) != 0 {
 		t.Fatalf("an event scheduled for later was claimed: %+v", postponed)
 	}
 
-	must(t, db.outbox.MarkFailed(ctx, event.Header().EventID, time.Now().Add(-time.Second), "broker down"))
+	must(t, db.outbox.MarkFailed(ctx, event.Header().EventID, time.Now().Add(-time.Second)))
 	retried, err := db.outbox.Claim(ctx, 10, time.Minute)
 	must(t, err)
 	if len(retried) != 1 || retried[0].Attempts != 2 {
 		t.Fatalf("Claim after two failures = %+v, want the event with two attempts", retried)
-	}
-
-	var lastError string
-	must(t, db.pool.QueryRow(ctx, `SELECT last_error FROM outbox WHERE event_id = $1`, event.Header().EventID.String()).Scan(&lastError))
-	if lastError != "broker down" {
-		t.Fatalf("last_error = %q, want the reason of the failure", lastError)
 	}
 
 	must(t, db.outbox.MarkPublished(ctx, event.Header().EventID))

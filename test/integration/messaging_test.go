@@ -160,7 +160,7 @@ func TestRedeliveryAfterCommitIsRecognisedByTheInbox(t *testing.T) {
 	if err != nil || len(received.Messages) != 1 {
 		t.Fatalf("receive: %d messages, err %v", len(received.Messages), err)
 	}
-	if outcome := m.handler.Handle(ctx, body, ""); outcome.Action != sqs.Delete {
+	if outcome := m.handler.Handle(ctx, body); outcome.Action != sqs.Delete {
 		t.Fatalf("outcome = %+v, want the handling committed", outcome)
 	}
 	m.wantWallet(t, w.ID, "975.00", 2)
@@ -278,7 +278,7 @@ func TestFailureAfterTheDomainChangeCommitsNothing(t *testing.T) {
 	handler.Inbox = inbox
 	body := message(w, "msg-1", "BET", "25.00", "tx-1")
 
-	if outcome := handler.Handle(ctx, body, ""); outcome.Action != sqs.Retry {
+	if outcome := handler.Handle(ctx, body); outcome.Action != sqs.Retry {
 		t.Fatalf("outcome = %+v, want a retry", outcome)
 	}
 	if got := m.counts(t); got != before || m.count(t, `SELECT count(*) FROM inbox`) != 0 {
@@ -287,7 +287,7 @@ func TestFailureAfterTheDomainChangeCommitsNothing(t *testing.T) {
 	m.wantWallet(t, w.ID, "1000.00", 1)
 
 	inbox.fail.Store(false)
-	if outcome := handler.Handle(ctx, body, ""); outcome.Action != sqs.Delete {
+	if outcome := handler.Handle(ctx, body); outcome.Action != sqs.Delete {
 		t.Fatalf("redelivery outcome = %+v, want the message handled", outcome)
 	}
 	m.wantWallet(t, w.ID, "975.00", 2)

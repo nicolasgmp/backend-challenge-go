@@ -102,8 +102,8 @@ func TestVerifierAgainstKeycloak(t *testing.T) {
 		server.Stop(ctx, t)
 
 		_, err := cold.Verify(ctx, providerToken)
-		if !errors.Is(err, app.ErrIdPUnavailable) {
-			t.Fatalf("err = %v, want %v", err, app.ErrIdPUnavailable)
+		if !errors.Is(err, auth.ErrInvalidToken) {
+			t.Fatalf("err = %v, want %v: a token that cannot be validated is refused", err, auth.ErrInvalidToken)
 		}
 		if strings.Contains(err.Error(), providerToken) {
 			t.Fatal("the error contains the token")

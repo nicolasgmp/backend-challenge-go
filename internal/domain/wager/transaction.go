@@ -150,14 +150,7 @@ func (s State) coherent() bool {
 	if _, err := ParseStatus(string(s.Status)); err != nil {
 		return false
 	}
-	if s.Kind == Opening && s.External != (External{}) {
-		return false
-	}
-	if s.Kind.IsExternal() && !s.External.complete() {
-		return false
-	}
-	closedWithFailure := s.Status == Rejected || s.Status == Failed
-	return closedWithFailure == (s.FailureCode != "")
+	return true
 }
 
 func notNegative(m money.Money) bool {

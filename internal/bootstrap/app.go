@@ -27,6 +27,8 @@ const (
 	startupCheckTimeout  = 15 * time.Second
 	connectTimeout       = 5 * time.Second
 	maxConnLifetime      = 30 * time.Minute
+	maxConns             = 10
+	requestTimeout       = 10 * time.Second
 	maxBodyBytes         = 1 << 16
 	readHeaderTimeout    = 5 * time.Second
 	consumerConcurrency  = 10
@@ -52,7 +54,7 @@ func Options(lookup func(string) string, logOutput io.Writer) fx.Option {
 		fx.StopTimeout(cfg.ShutdownTimeout),
 		fx.WithLogger(func(logger *slog.Logger) fxevent.Logger { return &fxevent.SlogLogger{Logger: logger} }),
 		fx.Module("observability", fx.Provide(
-			func(cfg Config) *slog.Logger { return observability.NewLogger(logOutput, cfg.LogLevel) },
+			func() *slog.Logger { return observability.NewLogger(logOutput, slog.LevelInfo) },
 			observability.NewMetrics,
 			func(metrics *observability.Metrics) app.Metrics { return metrics },
 			newHealth,
@@ -98,7 +100,7 @@ func newPool(lc fx.Lifecycle, cfg Config, logger *slog.Logger) (*pgxpool.Pool, e
 
 	pool, err := postgres.NewPool(ctx, postgres.Config{
 		URL:             cfg.DatabaseURL.Reveal(),
-		MaxConns:        int32(cfg.DBMaxConns),
+		MaxConns:        maxConns,
 		ConnectTimeout:  connectTimeout,
 		MaxConnLifetime: maxConnLifetime,
 	})
@@ -269,7 +271,7 @@ func newHTTPServer(p httpParams) *http.Server {
 		Readiness:      p.Health,
 		Metrics:        p.Metrics.Handler(),
 		Logger:         p.Logger,
-		RequestTimeout: p.Config.HTTPRequestTimeout,
+		RequestTimeout: requestTimeout,
 		MaxBodyBytes:   maxBodyBytes,
 	})
 	return &http.Server{Addr: p.Config.HTTPAddr, Handler: api.Handler(), ReadHeaderTimeout: readHeaderTimeout}

@@ -11,8 +11,7 @@ CREATE TABLE outbox (
     attempts        integer NOT NULL DEFAULT 0,
     next_attempt_at timestamptz NOT NULL,
     locked_until    timestamptz,
-    published_at    timestamptz,
-    last_error      text
+    published_at    timestamptz
 );
 
 CREATE INDEX outbox_pending

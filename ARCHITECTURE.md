@@ -184,7 +184,7 @@ erro transitório ------------------> ROLLBACK, adia a visibilidade
 ## 10. Autenticação e autorização
 
 - **IdP:** Keycloak 26.7.5 com `client_credentials`, como recomenda o enunciado; a comunicação é sempre entre serviços. O serviço só valida tokens.
-- **Validação** (`coreos/go-oidc`): assinatura, emissor, audiência (`wallet-service`) e validade. Token ausente ou inválido: `401`. Chaves do IdP inacessíveis: `503`; nunca se aceita token sem validar.
+- **Validação** (`coreos/go-oidc`): assinatura, emissor, audiência (`wallet-service`) e validade. Token ausente, inválido ou que não pôde ser validado: `401`. Nunca se aceita token sem validar; com o IdP fora do ar, tokens cuja chave já está em memória continuam sendo validados.
 - **Provedor autorizado:** claim `provider_id`, posta por um mapper do cliente. Token sem a claim não é de provedor.
 - **Permissões:** escopos OAuth, declarados ao lado de cada rota. Um teste falha se alguma rota de negócio ficar sem escopo.
 
@@ -334,12 +334,24 @@ Conflitos (`409`): `IDEMPOTENCY_KEY_REUSED`, `TRANSACTION_ALREADY_REGISTERED`, `
 - O banco não confere a coerência entre linhas de tabelas diferentes; isso é do caso de uso.
 - O MiniStack local aceita chamadas sem credencial e não aplica política de fila. Na AWS o controle seria uma política IAM por fila.
 - A leitura de JSON usa a biblioteca padrão: chave repetida vale a última, e o nome do campo é aceito em qualquer caixa.
-- Com o IdP fora do ar, um token de assinatura inválida recebe `503` em vez de `401`.
 
 **Não concluído**
 
 - Partidas dobradas, tracing, dashboards e teste de carga (opcionais no enunciado).
 - TLS e usuário de banco separado do dono das tabelas.
+
+**Onde ver cada critério de avaliação**
+
+| Critério | Pontos | Seções | Evidência |
+| --- | ---: | --- | --- |
+| Integridade financeira | 20 | 1, 2, 6 | `internal/domain/money`, `migrations/`, reconciliação ao fim de cada teste de integração e ponta a ponta |
+| Concorrência | 20 | 3 | `test/integration/usecase_test.go` (duas apostas de 80,00; 50 envios; 20 créditos); `test/e2e` com três instâncias |
+| Idempotência | 15 | 4 | `internal/app/submit.go`; testes de replay, conflito e reinício |
+| Mensageria e recuperação | 15 | 7, 8, 9 | `test/integration/messaging_test.go` (inbox, reentrega, DLQ, dois publicadores, broker fora do ar) |
+| Modelagem e arquitetura | 10 | 5, 10, 13 | `internal/domain`, `internal/bootstrap`, `internal/archtest` |
+| Testes | 10 | 15 | `make integration` (containers reais) e `make e2e` |
+| Observabilidade | 5 | 14 | `internal/infra/observability`; `/metrics`, `/health/*` |
+| Documentação | 5 | | `README.md` e este documento |
 
 **Verificação**
 
