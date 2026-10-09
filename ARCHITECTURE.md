@@ -36,7 +36,7 @@ Migrations em `migrations/`, uma por tabela, com `up` e `down`; um teste aplica,
 
 ## 3. Concorrência e locks
 
-Estratégia: **lock pessimista por carteira**. Toda operação que lê ou altera saldo trava a linha da carteira com `SELECT ... FOR UPDATE` antes de ler transações, ledger ou outbox (no SQS, só o registro da inbox vem antes):
+Estratégia: **lock pessimista por carteira**. Toda operação que altera saldo trava a linha da carteira com `SELECT ... FOR UPDATE` antes de ler transações, ledger ou outbox (no SQS, só o registro da inbox vem antes):
 
 ```
 BEGIN
@@ -247,7 +247,7 @@ Erros (`400`, `401`, `403`, `404`, `409`, `503`) em `application/problem+json` (
 
 ## 12. Códigos de falha
 
-A divisão: o que se julga olhando só a requisição é **entrada inválida** (nada é gravado; pode ser corrigido e reenviado). O que depende do estado gravado é **rejeição** (transação `REJECTED`, definitiva).
+A divisão: o que se julga olhando só a requisição, mais a carteira que não existe, é **entrada inválida** (nada é gravado; pode ser corrigido e reenviado). O que depende do estado gravado é **rejeição** (transação `REJECTED`, definitiva).
 
 | Entrada inválida | Situação |
 | --- | --- |

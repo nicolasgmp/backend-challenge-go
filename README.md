@@ -95,7 +95,7 @@ O realm é importado de [`deploy/keycloak/wallet-realm.json`](deploy/keycloak/wa
 
 ## Roteiro: da carteira ao ledger
 
-Carregue as variáveis e defina uma função que pede um token:
+Os comandos deste roteiro usam sintaxe de `bash` ou `zsh`; em outro shell (por exemplo `fish`), rode `bash` antes. Carregue as variáveis e defina uma função que pede um token:
 
 ```sh
 set -a; . ./.env; set +a
@@ -185,6 +185,8 @@ aws --endpoint-url http://localhost:4566 --region "$AWS_REGION" sqs send-message
   --message-body "{\"messageId\":\"msg-123\",\"type\":\"WagerTransactionRequested\",\"occurredAt\":\"2026-09-08T12:00:00.000Z\",\"data\":{\"providerId\":\"provider-a\",\"externalTransactionId\":\"transaction-200\",\"idempotencyKey\":\"provider-a:transaction-200\",\"playerId\":\"$PLAYER\",\"walletId\":\"$WALLET\",\"roundId\":\"round-987\",\"gameId\":\"fortune-chimp\",\"kind\":\"BET\",\"money\":{\"amount\":\"25.00\",\"currency\":\"BRL\"}}}"
 ```
 
+Para enviar outra mensagem, troque `msg-123`, `transaction-200` e a chave `provider-a:transaction-200`: com os mesmos identificadores, a fila FIFO descarta o reenvio em silêncio por 5 minutos e o serviço trata a mensagem como já processada.
+
 Sem a AWS CLI no host, a imagem oficial `amazon/aws-cli` aceita os mesmos argumentos (`docker run --rm --network host -e AWS_ACCESS_KEY_ID -e AWS_SECRET_ACCESS_KEY amazon/aws-cli:<versão> ...`); escolha e fixe a versão.
 
 Para ver o resultado: consulte a transação por `transaction-200`, como no passo 4. Os eventos publicados podem ser lidos de `wallet-events.fifo` com `aws sqs receive-message`.
@@ -216,7 +218,7 @@ Os testes de `test/e2e` já fazem estas simulações contra a stack; para repeti
 | --- | --- | --- |
 | matar uma instância | `docker compose kill wallet-2` e depois `docker compose up -d wallet-2` | as outras duas continuam atendendo; reenvios devolvem o resultado original; eventos pendentes são publicados por outra instância |
 | reiniciar todas | `docker compose restart wallet-1 wallet-2 wallet-3` | replays continuam devolvendo o resultado original; referências pendentes são retomadas |
-| banco fora do ar | `docker compose stop postgres` e depois `docker compose start postgres` | `503` com `Retry-After` nas operações e em `/health/ready`; `/health/live` segue `200`; depois da volta o reenvio é processado uma única vez |
+| banco fora do ar | `docker compose stop postgres` e depois `docker compose start postgres` | `503` com `Retry-After` nas operações e `503` em `/health/ready`; `/health/live` segue `200`; depois da volta o reenvio é processado uma única vez |
 | SQS fora do ar | `docker compose stop ministack`, depois `docker compose start ministack` e `docker compose run --rm queues` | as operações por HTTP continuam; os eventos ficam pendentes na outbox e saem depois da volta |
 | reversão antes da referência | enviar um `REFUND` com `referenceExternalTransactionId` de uma aposta que ainda não existe | resposta `202` com `PENDING_REFERENCE`; ao enviar a aposta, o reembolso é processado em seguida; sem a aposta, vira `REJECTED` com `REFERENCE_NOT_FOUND` ao fim do prazo |
 
