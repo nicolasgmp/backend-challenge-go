@@ -17,7 +17,7 @@ Camadas: `domain` (regras, sem dependência externa) ← `app` (casos de uso e i
 ## 2. Banco e transações
 
 - **Biblioteca:** `pgx` v5 com SQL escrito à mão. Sem ORM nem gerador de código.
-- **Delimitação da transação:** quem abre é o caso de uso, por `TxRunner.Run`. A transação vai no `context.Context`, e todo repositório chamado dentro dela a usa. Erro ou pânico desfaz tudo. Escrita ou lock fora de transação devolve erro.
+- **Delimitação da transação:** quem abre é o caso de uso, por `TxRunner.Run`. A transação vai no `context.Context`, e todo repositório chamado dentro dela a usa. Erro ou pânico desfaz tudo. Nos repositórios, escrita ou lock fora de transação devolve erro; só as marcações do publicador da outbox rodam fora, de propósito.
 - **`Run` dentro de `Run`:** vira um `SAVEPOINT`. É o caso do consumidor SQS, que grava a inbox e chama o caso de uso na mesma transação.
 - **Leitura consistente:** `RunReadOnly` usa `REPEATABLE READ READ ONLY` (reconciliação).
 - **Erros:** violação de índice único vira `app.ErrUniqueViolation`; deadlock, falha de serialização, `lock_timeout` e perda de conexão viram `app.ErrTransient`. A mensagem nunca traz a linha recusada nem a senha.
@@ -27,8 +27,8 @@ O que o banco impõe, independentemente do código Go:
 | Tabela | Regras |
 | --- | --- |
 | `wallets` | saldo ≥ 0; versão ≥ 1; uma carteira por `(player_id, currency)` |
-| `wager_transactions` | únicos `(provider_id, idempotency_key)` e `(provider_id, external_transaction_id)`; um `OPENING` por carteira; uma reversão `PROCESSED` por referência; origem externa exige os dados do provedor e origem interna os proíbe; valor ≥ 0; nunca `PENDING` |
-| `wallet_ledger_entries` | valor > 0; `balance_after = balance_before ± amount`; únicos `(wallet_id, transaction_id)` e `(wallet_id, wallet_version)`; triggers bloqueiam `UPDATE`, `DELETE` e `TRUNCATE` |
+| `wager_transactions` | únicos `(provider_id, idempotency_key)` e `(provider_id, external_transaction_id)`; um `OPENING` por carteira; uma reversão `PROCESSED` por referência; reversão `PROCESSED` exige a referência resolvida; origem externa exige os dados do provedor e origem interna os proíbe; tipo conhecido; valor ≥ 0; nunca `PENDING` |
+| `wallet_ledger_entries` | valor > 0; saldos ≥ 0; `balance_after = balance_before ± amount`; únicos `(wallet_id, transaction_id)` e `(wallet_id, wallet_version)`; triggers bloqueiam `UPDATE`, `DELETE` e `TRUNCATE` |
 | `inbox` | chave `(consumer_name, message_id)` |
 | `outbox` | trigger bloqueia alteração das colunas do evento |
 
@@ -36,7 +36,7 @@ Migrations em `migrations/`, uma por tabela, com `up` e `down`; um teste aplica,
 
 ## 3. Concorrência e locks
 
-Estratégia: **lock pessimista por carteira**. Toda operação começa com `SELECT ... FOR UPDATE` na linha da carteira, antes de qualquer outra leitura ou escrita:
+Estratégia: **lock pessimista por carteira**. Toda operação que lê ou altera saldo trava a linha da carteira com `SELECT ... FOR UPDATE` antes de ler transações, ledger ou outbox (no SQS, só o registro da inbox vem antes):
 
 ```
 BEGIN
@@ -158,7 +158,8 @@ erro transitório ------------------> ROLLBACK, adia a visibilidade
 - Inbox, domínio, ledger e eventos são confirmados no mesmo commit. A mensagem só é apagada depois dele; se o processo morre no meio, a reentrega é reconhecida pela inbox.
 - Rejeição de negócio e referência pendente apagam a mensagem (resultado gravado); não vão para a DLQ.
 - **Mensagens inválidas** (JSON inválido, envelope incompleto, `type` desconhecido, entrada inválida, conflito) vão direto à DLQ, com o motivo no atributo `reason`, sem esperar o redrive, para não segurar a fila FIFO da carteira.
-- **Retry:** `ChangeMessageVisibility` com atraso que dobra a cada recebimento; no quinto, o broker faz o redrive.
+- **Retry:** `ChangeMessageVisibility` com atraso que dobra a cada recebimento; no quinto a visibilidade é zerada e a entrega seguinte é o redrive do broker.
+- **Motivos na DLQ (`reason`):** `INVALID_MESSAGE`, `UNKNOWN_MESSAGE_TYPE`, `MESSAGE_ID_REUSED`, ou o código de entrada inválida ou de conflito.
 - **`SIGTERM`:** para de buscar, conclui o que está em tratamento e libera a visibilidade do que falhar.
 
 ## 9. Outbox e eventos
@@ -221,7 +222,7 @@ Provedores recebem só os escopos `wagering:*`; o serviço interno recebe `walle
 | rejeição de negócio | `422` |
 | indisponibilidade transitória | `503` com `Retry-After` |
 
-O replay repete o status original.
+O replay repete o status original. Erro inesperado responde `500` com o código `INTERNAL_ERROR`; o replay de uma transação `FAILED` também responde `500`, com o resultado da transação.
 
 Resultado de operação (`200`, `202`, `422`); campos ausentes são omitidos:
 
@@ -274,9 +275,11 @@ A divisão: o que se julga olhando só a requisição é **entrada inválida** (
 
 Falha: `PROCESSING_FAILED` (transação `FAILED`).
 
+Conflitos (`409`): `IDEMPOTENCY_KEY_REUSED`, `TRANSACTION_ALREADY_REGISTERED`, `WALLET_ALREADY_EXISTS`. Acesso: `UNAUTHORIZED` (`401`), `INSUFFICIENT_SCOPE` e `PROVIDER_MISMATCH` (`403`). Indisponibilidade: `SERVICE_UNAVAILABLE` (`503`).
+
 ## 13. Fx e shutdown
 
-- `cmd/server/main.go` só chama `fx.New`. Um módulo por área em `internal/bootstrap`: configuração, observabilidade, postgres, sqs, auth, app, workers, http. Injeção por construtor.
+- `cmd/server/main.go` só chama `fx.New`. A configuração é lida antes e entregue ao Fx; depois há um módulo por área em `internal/bootstrap`: observabilidade, postgres, sqs, auth, app, workers, http. Injeção por construtor.
 - **Configuração:** só por variável de ambiente, validada antes de qualquer conexão. O erro cita o nome da variável, nunca o valor. Segredos usam um tipo que imprime `[REDACTED]`.
 - **Inicialização:** verifica PostgreSQL, filas SQS e chaves do IdP. Se algo falha, o processo termina com código diferente de zero.
 - **Encerramento** (ordem inversa dos ganchos do `fx.Lifecycle`):

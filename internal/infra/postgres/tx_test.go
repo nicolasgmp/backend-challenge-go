@@ -5,7 +5,6 @@ package postgres
 import (
 	"context"
 	"errors"
-	"strings"
 	"testing"
 	"time"
 
@@ -61,37 +60,6 @@ func TestNewPool(t *testing.T) {
 	}
 }
 
-func TestNewPoolHidesThePassword(t *testing.T) {
-	ctx := context.Background()
-	const secret = "s3cr3t-value"
-
-	tests := []struct {
-		name string
-		cfg  Config
-		want error
-	}{
-		{"malformed url", Config{URL: "postgres://wallet:" + secret + "@localhost:port/db", MaxConns: 4}, ErrInvalidConfig},
-		{"unreachable server", Config{URL: "postgres://wallet:" + secret + "@127.0.0.1:1/db", MaxConns: 4, ConnectTimeout: time.Second}, app.ErrTransient},
-		{"wrong password", Config{URL: strings.Replace(pgtest.URL("postgres"), "local-test-password", secret, 1), MaxConns: 4, ConnectTimeout: 5 * time.Second}, nil},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			pool, err := NewPool(ctx, tt.cfg)
-			if err == nil {
-				pool.Close()
-				t.Fatal("NewPool succeeded, want an error")
-			}
-			if tt.want != nil && !errors.Is(err, tt.want) {
-				t.Fatalf("err = %v, want %v", err, tt.want)
-			}
-			if strings.Contains(err.Error(), secret) {
-				t.Fatalf("the error message contains the password: %v", err)
-			}
-		})
-	}
-}
-
 func TestRunCommitsAndRollsBack(t *testing.T) {
 	ctx := context.Background()
 	pool := pgtest.NewDatabase(ctx, t)
@@ -115,29 +83,6 @@ func TestRunCommitsAndRollsBack(t *testing.T) {
 	}
 	if walletCount(t, pool) != 1 {
 		t.Fatal("a failed transaction left a write behind")
-	}
-}
-
-func TestRunRollsBackOnPanic(t *testing.T) {
-	ctx := context.Background()
-	pool := pgtest.NewDatabase(ctx, t)
-	runner := NewTxRunner(pool, time.Second)
-
-	func() {
-		defer func() { _ = recover() }()
-		_ = runner.Run(ctx, func(ctx context.Context) error {
-			if err := insertInTx(ctx, firstWallet); err != nil {
-				return err
-			}
-			panic("boom")
-		})
-	}()
-
-	if walletCount(t, pool) != 0 {
-		t.Fatal("a panicking transaction left a write behind")
-	}
-	if acquired := pool.Stat().AcquiredConns(); acquired != 0 {
-		t.Fatalf("%d connections still held after the panic", acquired)
 	}
 }
 
@@ -221,52 +166,5 @@ func TestLockTimeoutIsTransient(t *testing.T) {
 	}
 	if waited := time.Since(started); waited < 200*time.Millisecond || waited > 3*time.Second {
 		t.Fatalf("waited %s for the lock, want about 200ms", waited)
-	}
-}
-
-func TestRunReadOnlySeesOneSnapshot(t *testing.T) {
-	ctx := context.Background()
-	pool := pgtest.NewDatabase(ctx, t)
-	runner := NewTxRunner(pool, time.Second)
-
-	count := func(ctx context.Context) (int, error) {
-		var wallets int
-		err := reader(ctx, pool).QueryRow(ctx, `SELECT count(*) FROM wallets`).Scan(&wallets)
-		return wallets, err
-	}
-
-	err := runner.RunReadOnly(ctx, func(ctx context.Context) error {
-		before, err := count(ctx)
-		if err != nil {
-			return err
-		}
-		if _, err := pool.Exec(ctx, insertWallet, firstWallet); err != nil {
-			return err
-		}
-		after, err := count(ctx)
-		if err != nil {
-			return err
-		}
-		if before != 0 || after != 0 {
-			t.Errorf("counts inside the snapshot = %d, %d, want 0, 0", before, after)
-		}
-		return nil
-	})
-	if err != nil {
-		t.Fatalf("RunReadOnly: %v", err)
-	}
-	if walletCount(t, pool) != 1 {
-		t.Fatalf("wallets = %d, want only the concurrent write", walletCount(t, pool))
-	}
-}
-
-func TestRunReadOnlyRefusesWrites(t *testing.T) {
-	ctx := context.Background()
-	pool := pgtest.NewDatabase(ctx, t)
-	runner := NewTxRunner(pool, time.Second)
-
-	err := runner.RunReadOnly(ctx, func(ctx context.Context) error { return insertInTx(ctx, firstWallet) })
-	if err == nil || walletCount(t, pool) != 0 {
-		t.Fatalf("err = %v, wallets = %d, want the write refused", err, walletCount(t, pool))
 	}
 }

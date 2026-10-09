@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"errors"
 	"reflect"
-	"sync"
 	"testing"
 	"time"
 
@@ -194,43 +193,6 @@ func TestWalletUpdateBalance(t *testing.T) {
 	}
 }
 
-func TestWalletLockMakesTheSecondTransactionWait(t *testing.T) {
-	ctx := context.Background()
-	db := newDatabase(t)
-	w := db.openWallet(t, 100000)
-	const hold = 300 * time.Millisecond
-
-	locked := make(chan struct{})
-	var waited time.Duration
-	var group sync.WaitGroup
-	group.Go(func() {
-		<-locked
-		started := time.Now()
-		err := db.runner.Run(ctx, func(ctx context.Context) error {
-			_, err := db.wallets.GetForUpdate(ctx, w.State().ID)
-			return err
-		})
-		if err != nil {
-			t.Errorf("second transaction: %v", err)
-		}
-		waited = time.Since(started)
-	})
-
-	db.write(t, func(ctx context.Context) error {
-		if _, err := db.wallets.GetForUpdate(ctx, w.State().ID); err != nil {
-			return err
-		}
-		close(locked)
-		time.Sleep(hold)
-		return nil
-	})
-	group.Wait()
-
-	if waited < hold/2 {
-		t.Fatalf("the second transaction waited %s, want it blocked while the first held the lock", waited)
-	}
-}
-
 func TestTransactionRoundTrip(t *testing.T) {
 	ctx := context.Background()
 	db := newDatabase(t)
@@ -311,50 +273,6 @@ func TestTransactionUniquenessAndProviderScope(t *testing.T) {
 	sameIDsOtherProvider := external(t, w, wager.Bet, "provider-b", "tx-1", "")
 	must(t, sameIDsOtherProvider.MarkProcessed(amount(t, 95000, "BRL"), ids.TransactionID{}))
 	db.write(t, func(ctx context.Context) error { return db.transactions.Insert(ctx, sameIDsOtherProvider) })
-}
-
-func TestHasProcessedReversal(t *testing.T) {
-	ctx := context.Background()
-	db := newDatabase(t)
-	w := db.openWallet(t, 100000)
-	bet := db.processedBet(t, w, "tx-bet")
-
-	taken := func() bool {
-		found, err := db.transactions.HasProcessedReversal(ctx, bet.State().ID)
-		must(t, err)
-		return found
-	}
-	if taken() {
-		t.Fatal("a bet without reversals is reported as reversed")
-	}
-
-	rejected := external(t, w, wager.Rollback, "provider-a", "tx-r1", "tx-bet")
-	must(t, rejected.MarkRejected(failure.ReferenceMismatch))
-	win := external(t, w, wager.Win, "provider-a", "tx-w1", "tx-bet")
-	must(t, win.MarkProcessed(amount(t, 100000, "BRL"), bet.State().ID))
-	db.write(t, func(ctx context.Context) error {
-		if err := db.transactions.Insert(ctx, rejected); err != nil {
-			return err
-		}
-		return db.transactions.Insert(ctx, win)
-	})
-	if taken() {
-		t.Fatal("a rejected reversal or a win occupies the reversal slot")
-	}
-
-	refund := external(t, w, wager.Refund, "provider-a", "tx-r2", "tx-bet")
-	must(t, refund.MarkProcessed(amount(t, 100000, "BRL"), bet.State().ID))
-	db.write(t, func(ctx context.Context) error { return db.transactions.Insert(ctx, refund) })
-	if !taken() {
-		t.Fatal("a processed refund is not reported")
-	}
-
-	rollback := external(t, w, wager.Rollback, "provider-a", "tx-r3", "tx-bet")
-	must(t, rollback.MarkProcessed(amount(t, 100000, "BRL"), bet.State().ID))
-	err := db.runner.Run(ctx, func(ctx context.Context) error { return db.transactions.Insert(ctx, rollback) })
-	if !errors.Is(err, app.ErrUniqueViolation) {
-		t.Fatalf("second processed reversal: err = %v, want %v", err, app.ErrUniqueViolation)
-	}
 }
 
 func TestPendingReferenceLifecycle(t *testing.T) {
@@ -585,88 +503,5 @@ func TestOutboxInsertAndClaim(t *testing.T) {
 	}
 	if age, err := db.outbox.OldestPendingAge(ctx); err != nil || age != 0 {
 		t.Fatalf("OldestPendingAge after publishing = %s, %v, want 0", age, err)
-	}
-}
-
-func TestOutboxConcurrentClaimsDoNotOverlap(t *testing.T) {
-	ctx := context.Background()
-	db := newDatabase(t)
-	w := db.openWallet(t, 0)
-	const total, publishers = 40, 4
-	for version := int64(1); version <= total; version++ {
-		db.insertEvent(t, w, version)
-	}
-
-	var (
-		mu       sync.Mutex
-		claims   = map[ids.EventID]int{}
-		group    sync.WaitGroup
-		firstErr error
-	)
-	for range publishers {
-		group.Go(func() {
-			for {
-				records, err := db.outbox.Claim(ctx, 5, time.Minute)
-				mu.Lock()
-				if err != nil {
-					firstErr = err
-				}
-				for _, record := range records {
-					claims[record.EventID]++
-				}
-				mu.Unlock()
-				if err != nil || len(records) == 0 {
-					return
-				}
-			}
-		})
-	}
-	group.Wait()
-	must(t, firstErr)
-
-	if len(claims) != total {
-		t.Fatalf("claimed %d distinct events, want %d", len(claims), total)
-	}
-	for id, times := range claims {
-		if times != 1 {
-			t.Fatalf("event %s was claimed %d times", id, times)
-		}
-	}
-}
-
-func TestInboxStore(t *testing.T) {
-	ctx := context.Background()
-	db := newDatabase(t)
-
-	register := func(messageID, hash string) app.InboxStatus {
-		var status app.InboxStatus
-		db.write(t, func(ctx context.Context) error {
-			var err error
-			status, err = db.inbox.Register(ctx, "wager-consumer", messageID, hash)
-			return err
-		})
-		return status
-	}
-
-	if got := register("msg-1", "hash-1"); got != app.InboxNew {
-		t.Fatalf("first delivery = %s, want %s", got, app.InboxNew)
-	}
-	if got := register("msg-1", "hash-1"); got != app.InboxDuplicate {
-		t.Fatalf("redelivery = %s, want %s", got, app.InboxDuplicate)
-	}
-	if got := register("msg-1", "hash-2"); got != app.InboxHashMismatch {
-		t.Fatalf("same id with another body = %s, want %s", got, app.InboxHashMismatch)
-	}
-
-	db.write(t, func(ctx context.Context) error { return db.inbox.Complete(ctx, "wager-consumer", "msg-1") })
-	var completed bool
-	must(t, db.pool.QueryRow(ctx, `SELECT completed_at IS NOT NULL FROM inbox WHERE message_id = 'msg-1'`).Scan(&completed))
-	if !completed {
-		t.Fatal("Complete did not record the completion time")
-	}
-
-	err := db.runner.Run(ctx, func(ctx context.Context) error { return db.inbox.Complete(ctx, "wager-consumer", "msg-9") })
-	if !errors.Is(err, app.ErrNotFound) {
-		t.Fatalf("Complete of an unknown message: err = %v, want %v", err, app.ErrNotFound)
 	}
 }

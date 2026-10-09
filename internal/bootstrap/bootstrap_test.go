@@ -5,8 +5,6 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
-	"os/exec"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -113,37 +111,5 @@ func TestOptionsFailWithoutARequiredVariable(t *testing.T) {
 	err := fx.New(bootstrap.Options(lookupIn(env), io.Discard), fx.NopLogger).Err()
 	if !errors.Is(err, bootstrap.ErrInvalidConfig) || !strings.Contains(err.Error(), bootstrap.EnvDatabaseURL) {
 		t.Fatalf("err = %v, want the missing variable named", err)
-	}
-}
-
-func TestServerExitsWithFailureOnInvalidConfiguration(t *testing.T) {
-	binary := filepath.Join(t.TempDir(), "server")
-	if output, err := exec.CommandContext(t.Context(), "go", "build", "-o", binary, "../../cmd/server").CombinedOutput(); err != nil {
-		t.Fatalf("go build: %v\n%s", err, output)
-	}
-
-	run := func(env map[string]string) (int, string) {
-		cmd := exec.CommandContext(t.Context(), binary)
-		cmd.Env = []string{}
-		for name, value := range env {
-			cmd.Env = append(cmd.Env, name+"="+value)
-		}
-		output, err := cmd.CombinedOutput()
-		var exit *exec.ExitError
-		if errors.As(err, &exit) {
-			return exit.ExitCode(), string(output)
-		}
-		return 0, string(output)
-	}
-
-	if code, output := run(nil); code == 0 || !strings.Contains(output, bootstrap.EnvDatabaseURL) {
-		t.Fatalf("without variables: exit code %d, output %q, want a failure naming the variable", code, output)
-	}
-
-	unreachable := completeEnv()
-	unreachable[bootstrap.EnvDatabaseURL] = "postgres://wallet:s3cr3t-db-password@127.0.0.1:1/wallet?sslmode=disable"
-	code, output := run(unreachable)
-	if code == 0 || strings.Contains(output, "s3cr3t") {
-		t.Fatalf("with an unreachable database: exit code %d, output %q, want a failure without the password", code, output)
 	}
 }

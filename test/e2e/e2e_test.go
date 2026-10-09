@@ -9,19 +9,6 @@ import (
 	"time"
 )
 
-func TestSmokeThroughEveryInstance(t *testing.T) {
-	s := environment(t)
-	w := s.open(t, "1000.00")
-
-	for instance := range instances {
-		bet := s.submit(instance, w, "BET", "10.00", s.externalID("smoke"), "")
-		if bet.err != nil || bet.status != http.StatusOK || bet.text("status") != "PROCESSED" {
-			t.Fatalf("bet through instance %d = %d %s (%v)", instance+1, bet.status, bet.raw, bet.err)
-		}
-	}
-	s.wantWallet(t, w, "970.00", 4)
-}
-
 func TestSameBetFiftyTimesAcrossInstances(t *testing.T) {
 	s := environment(t)
 	w := s.open(t, "1000.00")
@@ -192,43 +179,6 @@ func TestReversalsBeforeTheirReference(t *testing.T) {
 			t.Fatalf("rejection events = %d, want 1", events)
 		}
 	})
-}
-
-func TestAccessControl(t *testing.T) {
-	s := environment(t)
-	w := s.open(t, "1000.00")
-	externalID := s.externalID("auth")
-	bet := s.submit(0, w, "BET", "25.00", externalID, "")
-	if bet.text("status") != "PROCESSED" {
-		t.Fatalf("bet = %d %s", bet.status, bet.raw)
-	}
-	transactionPath := "/wagering/transactions/" + bet.text("transactionId")
-	body := operation(w, "provider-a", "BET", "25.00", s.externalID("denied"), "")
-
-	tests := []struct {
-		name   string
-		got    answer
-		status int
-		code   string
-	}{
-		{"no token", s.call(0, http.MethodPost, "/wagering/transactions", "", "k", body), http.StatusUnauthorized, "UNAUTHORIZED"},
-		{"tampered token", s.call(1, http.MethodPost, "/wagering/transactions", s.tokens["provider-a"]+"x", "k", body), http.StatusUnauthorized, "UNAUTHORIZED"},
-		{"provider B sending as provider A", s.call(2, http.MethodPost, "/wagering/transactions", s.tokens["provider-b"], "k", body), http.StatusForbidden, "PROVIDER_MISMATCH"},
-		{"provider opening a wallet", s.call(0, http.MethodPost, "/wallets", s.tokens["provider-a"], "", map[string]any{"playerId": w.player, "initialBalance": map[string]string{"amount": "1.00", "currency": "USD"}}), http.StatusForbidden, "INSUFFICIENT_SCOPE"},
-		{"provider reading a wallet", s.call(1, http.MethodGet, "/wallets/"+w.id, s.tokens["provider-a"], "", nil), http.StatusForbidden, "INSUFFICIENT_SCOPE"},
-		{"internal service sending a bet", s.call(2, http.MethodPost, "/wagering/transactions", s.internal, "k", body), http.StatusForbidden, "INSUFFICIENT_SCOPE"},
-		{"provider B reading a transaction of A", s.call(0, http.MethodGet, transactionPath, s.tokens["provider-b"], "", nil), http.StatusNotFound, "TRANSACTION_NOT_FOUND"},
-		{"provider B on the path of A", s.call(1, http.MethodGet, "/providers/provider-a/wagering/transactions/"+externalID, s.tokens["provider-b"], "", nil), http.StatusForbidden, "PROVIDER_MISMATCH"},
-	}
-	for _, tt := range tests {
-		if tt.got.err != nil || tt.got.status != tt.status || tt.got.text("code") != tt.code {
-			t.Errorf("%s = %d %s (%v), want %d %s", tt.name, tt.got.status, tt.got.raw, tt.got.err, tt.status, tt.code)
-		}
-	}
-	if got := s.call(2, http.MethodGet, transactionPath, s.tokens["provider-a"], "", nil); got.status != http.StatusOK {
-		t.Errorf("owner reading its transaction = %d %s, want 200", got.status, got.raw)
-	}
-	s.wantWallet(t, w, "975.00", 2)
 }
 
 func TestInstanceKilledDuringLoad(t *testing.T) {

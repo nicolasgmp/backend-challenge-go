@@ -3,7 +3,6 @@ package apptest
 import (
 	"cmp"
 	"context"
-	"encoding/json"
 	"errors"
 	"maps"
 	"slices"
@@ -26,8 +25,6 @@ type data struct {
 	transactions map[ids.TransactionID]wager.State
 	entries      []ledger.Entry
 	events       []events.Event
-	published    map[ids.EventID]bool
-	attempts     map[ids.EventID]int
 	inbox        map[string]string
 }
 
@@ -37,8 +34,6 @@ func (d data) clone() data {
 		transactions: maps.Clone(d.transactions),
 		entries:      slices.Clone(d.entries),
 		events:       slices.Clone(d.events),
-		published:    maps.Clone(d.published),
-		attempts:     maps.Clone(d.attempts),
 		inbox:        maps.Clone(d.inbox),
 	}
 }
@@ -56,8 +51,6 @@ func NewStore() *Store {
 		data: data{
 			wallets:      map[ids.WalletID]wallet.State{},
 			transactions: map[ids.TransactionID]wager.State{},
-			published:    map[ids.EventID]bool{},
-			attempts:     map[ids.EventID]int{},
 			inbox:        map[string]string{},
 		},
 		failures: map[string][]error{},
@@ -385,12 +378,15 @@ func (r ledgerRepository) Totals(_ context.Context, walletID ids.WalletID) (app.
 	return totals, nil
 }
 
-type outboxStore struct{ store *Store }
+type outboxStore struct {
+	app.OutboxStore
+	store *Store
+}
 
 var _ app.OutboxStore = outboxStore{}
 
 func (s *Store) Outbox() app.OutboxStore {
-	return outboxStore{s}
+	return outboxStore{store: s}
 }
 
 func (o outboxStore) Insert(_ context.Context, event events.Event) error {
@@ -399,58 +395,6 @@ func (o outboxStore) Insert(_ context.Context, event events.Event) error {
 	}
 	o.store.data.events = append(o.store.data.events, event)
 	return nil
-}
-
-func (o outboxStore) Claim(_ context.Context, limit int, _ time.Duration) ([]app.OutboxRecord, error) {
-	if err := o.store.call("outbox.Claim"); err != nil {
-		return nil, err
-	}
-	var records []app.OutboxRecord
-	for _, event := range o.store.data.events {
-		header := event.Header()
-		if o.store.data.published[header.EventID] || len(records) == limit {
-			continue
-		}
-		payload, err := json.Marshal(event)
-		if err != nil {
-			return nil, err
-		}
-		records = append(records, app.OutboxRecord{
-			EventID:  header.EventID,
-			GroupKey: header.WalletID.String(),
-			Payload:  payload,
-			Attempts: o.store.data.attempts[header.EventID],
-		})
-	}
-	return records, nil
-}
-
-func (o outboxStore) MarkPublished(_ context.Context, eventID ids.EventID) error {
-	if err := o.store.call("outbox.MarkPublished"); err != nil {
-		return err
-	}
-	o.store.data.published[eventID] = true
-	return nil
-}
-
-func (o outboxStore) MarkFailed(_ context.Context, eventID ids.EventID, _ time.Time, _ string) error {
-	if err := o.store.call("outbox.MarkFailed"); err != nil {
-		return err
-	}
-	o.store.data.attempts[eventID]++
-	return nil
-}
-
-func (o outboxStore) OldestPendingAge(_ context.Context) (time.Duration, error) {
-	if err := o.store.call("outbox.OldestPendingAge"); err != nil {
-		return 0, err
-	}
-	for _, event := range o.store.data.events {
-		if !o.store.data.published[event.Header().EventID] {
-			return time.Since(event.Header().OccurredAt), nil
-		}
-	}
-	return 0, nil
 }
 
 type inboxStore struct{ store *Store }

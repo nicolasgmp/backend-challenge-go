@@ -37,7 +37,7 @@ O comando só retorna quando as três instâncias respondem `200` em `/health/re
 
 ## Variáveis de ambiente
 
-Todas estão no [`.env.example`](.env.example), com uma linha de descrição cada. O arquivo traz só valores locais de exemplo; o `.env` de uso real não é versionado.
+Todas estão no [`.env.example`](.env.example), que traz só valores locais de exemplo; o `.env` de uso real não é versionado.
 
 | Variável | Obrigatória | Padrão | Significado |
 | --- | --- | --- | --- |
