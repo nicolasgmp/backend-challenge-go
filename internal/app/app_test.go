@@ -10,7 +10,7 @@ import (
 )
 
 func TestSentinelsSurviveWrapping(t *testing.T) {
-	sentinels := []error{app.ErrTransient, app.ErrUniqueViolation, app.ErrNotFound, app.ErrIdPUnavailable}
+	sentinels := []error{app.ErrTransient, app.ErrLockTimeout, app.ErrUniqueViolation, app.ErrNotFound, app.ErrForbidden, app.ErrIdPUnavailable}
 
 	for _, sentinel := range sentinels {
 		t.Run(sentinel.Error(), func(t *testing.T) {

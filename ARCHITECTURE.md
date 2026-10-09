@@ -78,7 +78,7 @@ A escrita produz `{"amount":"25.00","currency":"BRL"}`, com `amount` sempre em s
 
 ### 1.7. Persistência
 
-O valor será gravado como `BIGINT` de unidades mínimas e a moeda como `CHAR(3)`, sem conversão entre o tipo do domínio e o do banco. Ainda não implementado: as migrations e os repositórios são do grupo 9 do `tasks.md`.
+O valor será gravado como `BIGINT` de unidades mínimas e a moeda como `CHAR(3)`, sem conversão entre o tipo do domínio e o do banco. As tabelas estão na seção 2.4.md`.
 
 - **Base:** "A persistência deve preservar exatamente valor e moeda, por exemplo com unidades mínimas em `BIGINT` ou decimal em `NUMERIC`."
 
@@ -106,7 +106,7 @@ A transação SQL é aberta pelo caso de uso, por meio do `TxRunner`, e não pel
 | Todas as escritas de uma operação no mesmo commit | todos os repositórios usam a transação do contexto |
 | Escrita ou lock fora de transação | o repositório devolve `postgres.ErrNoTransaction` |
 | `Run` chamado dentro de outro `Run` | participa da transação de fora por meio de um `SAVEPOINT`; se o bloco de dentro falha, só ele é desfeito e a transação de fora continua utilizável |
-| Leitura consistente (`RunReadOnly`) | `REPEATABLE READ READ ONLY`: todas as leituras enxergam o mesmo instante e nenhuma escrita é aceita |
+| Leitura consistente (`RunReadOnly`) | `REPEATABLE READ READ ONLY`: todas as leituras enxergam o mesmo instante e nenhuma escrita é aceita. Só vale quando é a transação de fora; chamado dentro de um `Run`, herda a transação que já existe |
 
 O caso do `Run` aninhado é o do consumidor SQS, que abre a transação para gravar a inbox e chama o caso de uso dentro dela.
 
@@ -114,7 +114,7 @@ O caso do `Run` aninhado é o do consumidor SQS, que abre a transação para gra
 
 ### 2.3. Erros do banco
 
-Os repositórios nunca devolvem um erro do `pgx`. Cada erro é traduzido:
+Os erros devolvidos pelo servidor são traduzidos antes de sair do repositório:
 
 | Situação no PostgreSQL | Erro devolvido |
 | --- | --- |
@@ -124,7 +124,7 @@ Os repositórios nunca devolvem um erro do `pgx`. Cada erro é traduzido:
 | consulta sem linha | `app.ErrNotFound` |
 | qualquer outro | erro comum, só com o código e o nome da constraint |
 
-A mensagem nunca traz a linha recusada, a URL de conexão nem a senha. O construtor do pool devolve um erro fixo para URL inválida.
+A mensagem de um erro do servidor traz só o código e o nome da constraint: nunca a linha recusada, a URL de conexão nem a senha. O construtor do pool devolve um erro fixo para URL inválida. Um erro que não vem do servidor nem é de conexão (por exemplo, um parâmetro que o `pgx` não consegue codificar) segue com o texto original, porque indica defeito de programação e o texto ajuda a encontrá-lo.
 
 ### 2.4. Tabelas e o que o banco impõe
 
@@ -143,6 +143,15 @@ Valores monetários são `BIGINT` em unidades mínimas mais `CHAR(3)` com a moed
 
 Duas regras desta lista não estão no enunciado e foram acrescentadas porque o código depende delas: o prazo obrigatório em `PENDING_REFERENCE`, que o worker usa para encerrar a espera, e a referência obrigatória numa reversão processada, sem a qual a linha escaparia do índice que impede duas reversões.
 
+O que o banco **não** confere, e fica a cargo dos agregados e dos casos de uso:
+
+| Não conferido pelo banco | Quem garante |
+| --- | --- |
+| coerência entre linhas: o lançamento ser da mesma carteira, moeda e valor da transação; o saldo da carteira só mudar junto com um lançamento | o caso de uso, que grava tudo na mesma transação a partir do mesmo `Movement` |
+| moeda dentro da lista aceita, texto não vazio nos dados do provedor | `Money` e os identificadores do domínio |
+| exclusão de transação sem lançamento e de registro da outbox | a aplicação não tem nenhum `DELETE` |
+| o dono das tabelas desativar um trigger | fora do escopo: exigiria um usuário de aplicação separado do dono |
+
 - **Por quê no banco:** as regras continuam valendo se o lock da carteira não for tomado, se houver um defeito no código Go ou se alguém escrever direto no banco.
 - **Base:** garantias 3, 5 e 8 da seção 5: "As invariantes financeiras devem ser garantidas no banco", "O ledger deve ser append-only" e "Unicidade, não negatividade e imutabilidade do ledger devem ser impostas pelo schema, pelas constraints e pelos mecanismos de proteção do banco."
 
@@ -150,9 +159,26 @@ Duas regras desta lista não estão no enunciado e foram acrescentadas porque o 
 
 Cinco migrations em `migrations/`, uma por tabela, cada uma com `up` e `down`. O `down` remove tudo o que o `up` criou, inclusive funções e triggers. Um teste aplica todas, reverte uma a uma até não restar tabela, função, trigger nem índice, e aplica de novo.
 
-Os testes de integração usam PostgreSQL real (`postgres:17.6-alpine`) num container. Cada teste recebe um banco próprio, copiado de um modelo com as migrations já aplicadas, para que um teste não veja os dados de outro.
+Os testes de integração usam PostgreSQL real (`postgres:17.6-alpine`) num container, e executam os mesmos arquivos `.sql` de `migrations/`. Os alvos `make migrate-up` e `make migrate-down` usam a ferramenta `golang-migrate` sobre os mesmos arquivos. Cada teste recebe um banco próprio, copiado de um modelo com as migrations já aplicadas, para que um teste não veja os dados de outro.
 
 - **Base:** "Migrations versionadas, com aplicação e reversão documentadas". Os comandos estão no `README.md` (grupo 18 do `tasks.md`).
+
+### 2.6. Repositórios
+
+| Decisão | Motivo |
+| --- | --- |
+| identificadores vão e voltam do `pgx` como texto | o banco valida o `uuid`; o domínio não precisa expor bytes nem conhecer tipos do `pgx` |
+| instantes voltam convertidos para UTC | o `pgx` devolve no fuso da máquina; o domínio trabalha em UTC |
+| campo ausente no domínio vira `NULL` | as constraints do tipo "presente só neste estado" dependem de `NULL` de verdade |
+| `Update` da transação grava só as colunas que mudam depois da criação | estado, referência resolvida, código de falha, saldo resultante, próxima tentativa, contadores e instantes |
+| o payload da outbox é `jsonb` | o banco guarda o conteúdo, não os bytes: o texto publicado pode ter as chaves em outra ordem, com o mesmo conteúdo |
+| a reserva da outbox (`Claim`) é um único comando com `FOR UPDATE SKIP LOCKED` | um publisher não espera pelo outro e dois nunca pegam o mesmo registro com a reserva válida |
+
+Limitações conhecidas:
+
+- **Relógios:** a reserva da outbox usa o relógio do banco, e a próxima tentativa de um evento é marcada com o relógio da instância. Uma diferença entre os dois só atrasa ou adianta a publicação nessa mesma diferença; nenhum evento é perdido.
+- **Publisher travado além da reserva:** se um publisher fica parado por mais que o prazo da reserva e depois registra uma falha, ele libera a reserva que outro publisher já tinha tomado. O efeito é uma publicação repetida com o mesmo `eventId`, que o contrato de entrega já admite.
+- **Soma do ledger:** `Totals` soma em inteiros. Se a soma de créditos de uma carteira passar de 92 quatrilhões em unidades inteiras, a consulta falha com erro; não há arredondamento nem valor errado.
 
 ## 3. Controle de concorrência e locks
 
